@@ -70,7 +70,7 @@ class TriageCall:
         headers = {"Authorization": f"Token {settings.deepgram_api_key}"}
 
         try:
-            async with websockets.connect(DEEPGRAM_STT_URL, extra_headers=headers) as dg_ws:
+            async with websockets.connect(DEEPGRAM_STT_URL, additional_headers=headers) as dg_ws:
                 self._dg_ws = dg_ws
                 logger.info("Deepgram STT connected")
 
