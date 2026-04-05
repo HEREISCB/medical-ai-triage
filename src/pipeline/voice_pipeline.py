@@ -23,8 +23,9 @@ from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.runner import PipelineRunner
 from pipecat.pipeline.task import PipelineParams, PipelineTask
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
-from pipecat.services.deepgram import DeepgramSTTService, DeepgramTTSService
-from pipecat.transports.services.daily import DailyParams, DailyTransport
+from pipecat.services.deepgram.stt import DeepgramSTTService
+from pipecat.services.deepgram.tts import DeepgramTTSService
+from pipecat.transports.daily.transport import DailyParams, DailyTransport
 
 from src.config import settings
 from src.nlu.extractor import extract_structured_data, classify_complaint
