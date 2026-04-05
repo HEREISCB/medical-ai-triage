@@ -1,0 +1,318 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Medical AI Triage</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #0a0e1a;
+            color: #e0e6ed;
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .container {
+            text-align: center;
+            max-width: 480px;
+            padding: 40px 24px;
+        }
+
+        .logo {
+            font-size: 48px;
+            margin-bottom: 8px;
+        }
+
+        h1 {
+            font-size: 28px;
+            font-weight: 700;
+            margin-bottom: 8px;
+            color: #ffffff;
+        }
+
+        .subtitle {
+            font-size: 15px;
+            color: #8892a4;
+            margin-bottom: 40px;
+            line-height: 1.5;
+        }
+
+        #call-btn {
+            width: 140px;
+            height: 140px;
+            border-radius: 50%;
+            border: none;
+            background: linear-gradient(135deg, #22c55e, #16a34a);
+            color: white;
+            font-size: 18px;
+            font-weight: 600;
+            cursor: pointer;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            margin: 0 auto 32px;
+            transition: all 0.3s ease;
+            box-shadow: 0 0 40px rgba(34, 197, 94, 0.3);
+        }
+
+        #call-btn:hover {
+            transform: scale(1.05);
+            box-shadow: 0 0 60px rgba(34, 197, 94, 0.4);
+        }
+
+        #call-btn.active {
+            background: linear-gradient(135deg, #ef4444, #dc2626);
+            box-shadow: 0 0 40px rgba(239, 68, 68, 0.3);
+            animation: pulse 2s infinite;
+        }
+
+        #call-btn.active:hover {
+            box-shadow: 0 0 60px rgba(239, 68, 68, 0.4);
+        }
+
+        #call-btn.connecting {
+            background: linear-gradient(135deg, #f59e0b, #d97706);
+            box-shadow: 0 0 40px rgba(245, 158, 11, 0.3);
+            cursor: wait;
+        }
+
+        #call-btn svg {
+            width: 36px;
+            height: 36px;
+        }
+
+        @keyframes pulse {
+            0%, 100% { box-shadow: 0 0 40px rgba(239, 68, 68, 0.3); }
+            50% { box-shadow: 0 0 60px rgba(239, 68, 68, 0.5); }
+        }
+
+        #status {
+            font-size: 16px;
+            font-weight: 500;
+            margin-bottom: 16px;
+            min-height: 24px;
+        }
+
+        #status.connected { color: #22c55e; }
+        #status.connecting { color: #f59e0b; }
+        #status.error { color: #ef4444; }
+
+        .timer {
+            font-size: 32px;
+            font-weight: 300;
+            font-variant-numeric: tabular-nums;
+            color: #64748b;
+            margin-bottom: 24px;
+            min-height: 40px;
+        }
+
+        .timer.active { color: #e0e6ed; }
+
+        .disclaimer {
+            font-size: 12px;
+            color: #4a5568;
+            line-height: 1.6;
+            padding: 16px;
+            border-top: 1px solid #1e293b;
+            margin-top: 24px;
+        }
+
+        .visualizer {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 4px;
+            height: 40px;
+            margin-bottom: 24px;
+        }
+
+        .visualizer .bar {
+            width: 4px;
+            background: #22c55e;
+            border-radius: 2px;
+            transition: height 0.1s ease;
+            height: 4px;
+        }
+
+        .visualizer.active .bar {
+            animation: equalizer 0.5s ease infinite alternate;
+        }
+
+        .visualizer .bar:nth-child(1) { animation-delay: 0.0s; }
+        .visualizer .bar:nth-child(2) { animation-delay: 0.1s; }
+        .visualizer .bar:nth-child(3) { animation-delay: 0.2s; }
+        .visualizer .bar:nth-child(4) { animation-delay: 0.3s; }
+        .visualizer .bar:nth-child(5) { animation-delay: 0.4s; }
+        .visualizer .bar:nth-child(6) { animation-delay: 0.3s; }
+        .visualizer .bar:nth-child(7) { animation-delay: 0.2s; }
+
+        @keyframes equalizer {
+            0% { height: 4px; }
+            100% { height: 32px; }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="logo">🏥</div>
+        <h1>Medical AI Triage</h1>
+        <p class="subtitle">
+            AI-powered emergency medical assessment.<br>
+            Press the button to start a voice call with the AI assistant.
+        </p>
+
+        <div class="visualizer" id="visualizer">
+            <div class="bar"></div>
+            <div class="bar"></div>
+            <div class="bar"></div>
+            <div class="bar"></div>
+            <div class="bar"></div>
+            <div class="bar"></div>
+            <div class="bar"></div>
+        </div>
+
+        <button id="call-btn" onclick="toggleCall()">
+            <svg viewBox="0 0 24 24" fill="currentColor">
+                <path d="M6.62 10.79c1.44 2.83 3.76 5.14 6.59 6.59l2.2-2.2c.27-.27.67-.36 1.02-.24 1.12.37 2.33.57 3.57.57.55 0 1 .45 1 1V20c0 .55-.45 1-1 1-9.39 0-17-7.61-17-17 0-.55.45-1 1-1h3.5c.55 0 1 .45 1 1 0 1.25.2 2.45.57 3.57.11.35.03.74-.25 1.02l-2.2 2.2z"/>
+            </svg>
+            <span>Start Call</span>
+        </button>
+
+        <div id="status"></div>
+        <div class="timer" id="timer"></div>
+
+        <div class="disclaimer">
+            This is an AI assistant, not a medical professional. It asks questions to help
+            determine urgency. For immediate life-threatening emergencies, call 999 or 112.
+        </div>
+    </div>
+
+    <script src="https://unpkg.com/@daily-co/daily-js"></script>
+    <script>
+        let callFrame = null;
+        let isInCall = false;
+        let timerInterval = null;
+        let callStartTime = null;
+
+        const btn = document.getElementById('call-btn');
+        const statusEl = document.getElementById('status');
+        const timerEl = document.getElementById('timer');
+        const visualizer = document.getElementById('visualizer');
+
+        function setStatus(text, className) {
+            statusEl.textContent = text;
+            statusEl.className = className || '';
+        }
+
+        function updateTimer() {
+            if (!callStartTime) return;
+            const elapsed = Math.floor((Date.now() - callStartTime) / 1000);
+            const min = Math.floor(elapsed / 60).toString().padStart(2, '0');
+            const sec = (elapsed % 60).toString().padStart(2, '0');
+            timerEl.textContent = `${min}:${sec}`;
+        }
+
+        async function toggleCall() {
+            if (isInCall) {
+                endCall();
+            } else {
+                startCall();
+            }
+        }
+
+        async function startCall() {
+            btn.className = 'connecting';
+            btn.querySelector('span').textContent = 'Connecting...';
+            setStatus('Starting AI assistant...', 'connecting');
+
+            try {
+                // Ask the server to create a room and start the bot
+                const res = await fetch('/api/start-bot', { method: 'POST' });
+                if (!res.ok) throw new Error('Failed to start bot');
+                const data = await res.json();
+
+                // Get a caller token
+                const tokenRes = await fetch(`/api/room/${data.room_name}/token`);
+                if (!tokenRes.ok) throw new Error('Failed to get token');
+                const tokenData = await tokenRes.json();
+
+                // Create Daily call frame (headless - audio only)
+                callFrame = DailyIframe.createCallObject({
+                    audioSource: true,
+                    videoSource: false,
+                });
+
+                callFrame.on('joined-meeting', () => {
+                    isInCall = true;
+                    btn.className = 'active';
+                    btn.querySelector('span').textContent = 'End Call';
+                    btn.querySelector('svg').innerHTML = '<path d="M12 9c-1.6 0-3.15.25-4.6.72v3.1c0 .39-.23.74-.56.9-.98.49-1.87 1.12-2.66 1.85-.18.18-.43.28-.7.28-.28 0-.53-.11-.71-.29L.29 13.08c-.18-.17-.29-.42-.29-.7 0-.28.11-.53.29-.71C3.34 8.78 7.46 7 12 7s8.66 1.78 11.71 4.67c.18.18.29.43.29.71 0 .28-.11.53-.29.71l-2.48 2.48c-.18.18-.43.29-.71.29-.27 0-.52-.11-.7-.28-.79-.74-1.69-1.36-2.67-1.85-.33-.16-.56-.5-.56-.9v-3.1C15.15 9.25 13.6 9 12 9z"/>';
+                    setStatus('Connected — AI is listening', 'connected');
+                    visualizer.classList.add('active');
+                    callStartTime = Date.now();
+                    timerEl.classList.add('active');
+                    timerInterval = setInterval(updateTimer, 1000);
+                });
+
+                callFrame.on('left-meeting', () => {
+                    cleanupCall();
+                });
+
+                callFrame.on('error', (e) => {
+                    console.error('Call error:', e);
+                    setStatus('Connection error. Please try again.', 'error');
+                    cleanupCall();
+                });
+
+                // Join the room
+                await callFrame.join({
+                    url: data.room_url,
+                    token: tokenData.token,
+                });
+
+            } catch (err) {
+                console.error('Failed to start call:', err);
+                setStatus('Failed to connect. Please try again.', 'error');
+                cleanupCall();
+            }
+        }
+
+        function endCall() {
+            if (callFrame) {
+                callFrame.leave();
+            }
+            cleanupCall();
+        }
+
+        function cleanupCall() {
+            isInCall = false;
+            if (callFrame) {
+                callFrame.destroy();
+                callFrame = null;
+            }
+            if (timerInterval) {
+                clearInterval(timerInterval);
+                timerInterval = null;
+            }
+
+            btn.className = '';
+            btn.querySelector('span').textContent = 'Start Call';
+            btn.querySelector('svg').innerHTML = '<path d="M6.62 10.79c1.44 2.83 3.76 5.14 6.59 6.59l2.2-2.2c.27-.27.67-.36 1.02-.24 1.12.37 2.33.57 3.57.57.55 0 1 .45 1 1V20c0 .55-.45 1-1 1-9.39 0-17-7.61-17-17 0-.55.45-1 1-1h3.5c.55 0 1 .45 1 1 0 1.25.2 2.45.57 3.57.11.35.03.74-.25 1.02l-2.2 2.2z"/>';
+            visualizer.classList.remove('active');
+            timerEl.classList.remove('active');
+
+            if (statusEl.className !== 'error') {
+                setStatus('Call ended', '');
+            }
+        }
+    </script>
+</body>
+</html>
