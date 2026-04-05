@@ -25,7 +25,7 @@ from pipecat.pipeline.task import PipelineParams, PipelineTask
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.services.deepgram.stt import DeepgramSTTService
 from pipecat.services.deepgram.tts import DeepgramTTSService
-from pipecat.transports.websocket.server import WebSocketServerTransport, WebSocketServerParams
+from pipecat.transports.websocket.server import WebsocketServerTransport, WebsocketServerParams
 
 from src.config import settings
 from src.nlu.extractor import extract_structured_data, classify_complaint
@@ -242,8 +242,8 @@ def create_pipeline_components():
 
     Returns the transport, triage processor, and assembled pipeline task.
     """
-    transport = WebSocketServerTransport(
-        params=WebSocketServerParams(
+    transport = WebsocketServerTransport(
+        params=WebsocketServerParams(
             audio_in_enabled=True,
             audio_out_enabled=True,
             add_wav_header=True,
