@@ -4,19 +4,14 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 
-    # Daily
-    daily_api_key: str = ""
-    daily_room_url: str = ""
-    daily_api_url: str = "https://api.daily.co/v1"
-
-    # Deepgram
+    # Deepgram (STT + TTS)
     deepgram_api_key: str = ""
 
-    # Groq
+    # Groq (LLM)
     groq_api_key: str = ""
     groq_model: str = "llama-3.3-70b-versatile"
 
-    # Database
+    # Database (optional for MVP)
     database_url: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/medical_triage"
 
     # App

@@ -1,6 +1,6 @@
 """Main Pipecat voice pipeline for medical triage.
 
-Orchestrates: Daily (transport) -> Deepgram STT -> Triage Logic -> Deepgram TTS
+Orchestrates: WebSocket (transport) -> Deepgram STT -> Triage Logic -> Deepgram TTS
 
 The triage logic is a custom Pipecat processor that:
 1. Receives transcribed text from STT
@@ -25,7 +25,7 @@ from pipecat.pipeline.task import PipelineParams, PipelineTask
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.services.deepgram.stt import DeepgramSTTService
 from pipecat.services.deepgram.tts import DeepgramTTSService
-from pipecat.transports.daily.transport import DailyParams, DailyTransport
+from pipecat.transports.websocket_server import WebSocketServerParams, WebSocketServerTransport
 
 from src.config import settings
 from src.nlu.extractor import extract_structured_data, classify_complaint
@@ -85,7 +85,6 @@ class TriageProcessor(FrameProcessor):
                 self.session.internal_notes.append(f"Escalated: {reason}")
                 response = ESCALATION_TEXT
                 await self.push_frame(TextFrame(text=response), FrameDirection.DOWNSTREAM)
-                # Generate triage report
                 report = self.machine.get_triage_report()
                 logger.info("Triage report: %s", report)
                 self.session.state = TriageState.CALL_END
@@ -238,38 +237,28 @@ class TriageProcessor(FrameProcessor):
         return question
 
 
-async def create_pipeline(room_url: str, token: str) -> PipelineTask:
-    """Create and configure the full voice triage pipeline.
+def create_pipeline_components():
+    """Create the pipeline components for WebSocket transport.
 
-    Args:
-        room_url: Daily room URL.
-        token: Daily room token.
-
-    Returns:
-        Configured PipelineTask ready to run.
+    Returns the transport, triage processor, and assembled pipeline task.
     """
-    transport = DailyTransport(
-        room_url=room_url,
-        token=token,
-        bot_name="Triage AI",
-        params=DailyParams(
+    transport = WebSocketServerTransport(
+        params=WebSocketServerParams(
             audio_in_enabled=True,
             audio_out_enabled=True,
+            add_wav_header=True,
             vad_enabled=True,
-            vad_analyzer=None,  # Use Pipecat's default Silero VAD
-            transcription_enabled=False,  # We use our own STT
-        ),
+            vad_audio_passthrough=True,
+            serializer=None,  # Use default ProtobufFrameSerializer
+        )
     )
 
     stt = DeepgramSTTService(
         api_key=settings.deepgram_api_key,
-        model="nova-2",
-        language="en",
     )
 
     tts = DeepgramTTSService(
         api_key=settings.deepgram_api_key,
-        voice="aura-asteria-en",  # Calm, clear female voice
     )
 
     triage = TriageProcessor()
@@ -290,24 +279,23 @@ async def create_pipeline(room_url: str, token: str) -> PipelineTask:
         ),
     )
 
-    # Send greeting when participant joins
-    @transport.event_handler("on_first_participant_joined")
-    async def on_joined(transport, participant):
-        logger.info("Caller joined: %s", participant.get("id", "unknown"))
+    @transport.event_handler("on_client_connected")
+    async def on_connected(transport, client):
+        logger.info("Caller connected via WebSocket")
         await triage.send_greeting()
 
-    @transport.event_handler("on_participant_left")
-    async def on_left(transport, participant, reason):
-        logger.info("Caller left: %s (reason: %s)", participant.get("id", "unknown"), reason)
+    @transport.event_handler("on_client_disconnected")
+    async def on_disconnected(transport, client):
+        logger.info("Caller disconnected")
         report = triage.machine.get_triage_report()
         logger.info("Final triage report: %s", report)
         await task.queue_frame(EndFrame())
 
-    return task
+    return transport, task
 
 
-async def run_pipeline(room_url: str, token: str):
-    """Run the voice triage pipeline."""
+async def run_pipeline_ws(websocket):
+    """Run the voice triage pipeline with a WebSocket connection."""
+    transport, task = create_pipeline_components()
     runner = PipelineRunner()
-    task = await create_pipeline(room_url, token)
     await runner.run(task)
