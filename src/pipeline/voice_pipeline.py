@@ -64,9 +64,9 @@ class TriageAgent(Agent):
         if greeting:
             self.session.say(greeting)
 
-    async def on_user_turn_completed(self, turn_ctx, message: ChatMessage):
+    async def on_user_turn_completed(self, turn_ctx, new_message: ChatMessage):
         """Called when the user finishes speaking. Process through triage."""
-        caller_text = message.text_content.strip()
+        caller_text = new_message.text_content.strip()
         if not caller_text:
             return
 
