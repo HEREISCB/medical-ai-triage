@@ -246,10 +246,12 @@
                     sampleRate: SAMPLE_RATE,
                 });
 
-                // Connect to Pipecat's WebSocket server on port 8765
-                const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-                const host = window.location.hostname;
-                ws = new WebSocket(`${protocol}//${host}:8765`);
+                // Connect to Pipecat's WebSocket server
+                // If WS_URL is set in the page, use it (for tunneled setups)
+                // Otherwise connect to same host on port 8765
+                const wsUrl = window.TRIAGE_WS_URL ||
+                    `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.hostname}:8765`;
+                ws = new WebSocket(wsUrl);
                 ws.binaryType = 'arraybuffer';
 
                 ws.onopen = () => {

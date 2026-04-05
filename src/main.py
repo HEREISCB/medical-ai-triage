@@ -1,16 +1,19 @@
-"""FastAPI application for the medical triage system.
+"""Medical AI Triage server.
 
-Architecture:
-- FastAPI serves the web UI on port 8000
-- Pipecat runs its own WebSocket server on port 8765 for audio
-- Client connects to both: HTTP for the page, WS for audio
+Single-port architecture:
+- HTTP server on port 8000 serves the web UI
+- Pipecat WebSocket server on port 8765 handles audio
+- Frontend auto-detects the WS URL from WS_URL env var or same host
+
+For cloudflared: set WS_URL env var to your second tunnel URL,
+OR use the simple approach below that runs both on one process.
 """
 
 import asyncio
 import logging
-
-from fastapi import FastAPI
-from fastapi.responses import HTMLResponse
+import os
+from http.server import HTTPServer, SimpleHTTPRequestHandler
+from threading import Thread
 
 from src.config import settings
 
@@ -20,49 +23,30 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-app = FastAPI(
-    title="Medical AI Triage",
-    description="Voice-based AI medical triage system",
-    version="0.1.0",
-)
 
-_pipeline_task = None
+def start_http_server():
+    """Serve static files on the configured port in a background thread."""
+    os.chdir("static")
+
+    class Handler(SimpleHTTPRequestHandler):
+        def log_message(self, format, *args):
+            logger.info("HTTP: %s", format % args)
+
+    server = HTTPServer(("0.0.0.0", settings.app_port), Handler)
+    logger.info("HTTP server on http://0.0.0.0:%d", settings.app_port)
+    server.serve_forever()
 
 
-async def start_pipeline():
-    """Start the Pipecat voice pipeline on app startup."""
-    global _pipeline_task
+async def main():
+    # Start HTTP server for the web UI in a background thread
+    http_thread = Thread(target=start_http_server, daemon=True)
+    http_thread.start()
+
+    # Start the Pipecat voice pipeline
     from src.pipeline.voice_pipeline import run_pipeline
-    _pipeline_task = asyncio.create_task(run_pipeline())
-    logger.info("Pipecat pipeline started on ws://0.0.0.0:8765")
+    logger.info("Starting Pipecat pipeline on ws://0.0.0.0:8765")
+    await run_pipeline()
 
 
-@app.on_event("startup")
-async def on_startup():
-    await start_pipeline()
-
-
-@app.on_event("shutdown")
-async def on_shutdown():
-    global _pipeline_task
-    if _pipeline_task:
-        _pipeline_task.cancel()
-        try:
-            await _pipeline_task
-        except asyncio.CancelledError:
-            pass
-
-
-@app.get("/api/health")
-async def health():
-    return {"status": "ok", "pipeline_running": _pipeline_task is not None and not _pipeline_task.done()}
-
-
-@app.get("/", response_class=HTMLResponse)
-async def index():
-    """Serve the call UI page."""
-    try:
-        with open("static/index.html", "r") as f:
-            return HTMLResponse(content=f.read())
-    except FileNotFoundError:
-        return HTMLResponse(content="<h1>Medical AI Triage</h1><p>Static files not found.</p>")
+if __name__ == "__main__":
+    asyncio.run(main())

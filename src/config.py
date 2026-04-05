@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     app_host: str = "0.0.0.0"
     app_port: int = 8000
     app_env: str = "development"
+    ws_port: int = 8765
 
 
 settings = Settings()
