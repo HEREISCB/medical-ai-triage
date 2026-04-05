@@ -14,7 +14,6 @@ import uuid
 
 from deepgram import (
     DeepgramClient,
-    DeepgramClientOptions,
     LiveTranscriptionEvents,
     LiveOptions,
 )
@@ -63,8 +62,7 @@ class TriageCall:
             await self._speak(greeting)
 
         # Set up Deepgram for live STT
-        config = DeepgramClientOptions(options={"keepalive": "true"})
-        self._dg_client = DeepgramClient(settings.deepgram_api_key, config)
+        self._dg_client = DeepgramClient(settings.deepgram_api_key)
         self._dg_connection = self._dg_client.listen.asyncwebsocket.v("1")
 
         # Handle transcription results
