@@ -23,6 +23,7 @@ from livekit.plugins import deepgram, silero, openai
 
 from src.config import settings
 from src.caller_store import get_caller
+from src.email_template import render_triage_email
 
 logger = logging.getLogger(__name__)
 

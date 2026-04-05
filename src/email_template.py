@@ -1,0 +1,117 @@
+"""HTML email template for triage reports."""
+
+
+def render_triage_email(report: dict) -> str:
+    """Render a triage report as an HTML email."""
+    caller = report.get("caller", {})
+    triage = report.get("triage", {})
+
+    severity = triage.get("severity", "unknown").lower()
+    severity_colors = {
+        "critical": ("#dc2626", "#fef2f2", "CRITICAL"),
+        "high": ("#ea580c", "#fff7ed", "HIGH"),
+        "severe": ("#ea580c", "#fff7ed", "SEVERE"),
+        "urgent": ("#d97706", "#fffbeb", "URGENT"),
+        "moderate": ("#2563eb", "#eff6ff", "MODERATE"),
+        "minor": ("#16a34a", "#f0fdf4", "MINOR"),
+        "low": ("#16a34a", "#f0fdf4", "LOW"),
+    }
+    sev_color, sev_bg, sev_label = severity_colors.get(
+        severity, ("#6b7280", "#f9fafb", severity.upper())
+    )
+
+    return f"""<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
+<body style="margin:0;padding:0;background:#f1f5f9;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;">
+<table width="100%" cellpadding="0" cellspacing="0" style="background:#f1f5f9;padding:32px 16px;">
+<tr><td align="center">
+<table width="600" cellpadding="0" cellspacing="0" style="background:#ffffff;border-radius:12px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,0.1);">
+
+  <!-- Header -->
+  <tr>
+    <td style="background:#0f172a;padding:32px 40px;text-align:center;">
+      <div style="font-size:32px;margin-bottom:8px;">&#127973;</div>
+      <h1 style="color:#ffffff;font-size:22px;margin:0;font-weight:700;">Medical Triage Report</h1>
+      <p style="color:#94a3b8;font-size:13px;margin:8px 0 0;">AI-Powered Emergency Assessment</p>
+    </td>
+  </tr>
+
+  <!-- Severity Badge -->
+  <tr>
+    <td style="padding:24px 40px 0;">
+      <table width="100%" cellpadding="0" cellspacing="0">
+        <tr>
+          <td style="background:{sev_bg};border-left:4px solid {sev_color};border-radius:8px;padding:16px 20px;">
+            <span style="display:inline-block;background:{sev_color};color:#fff;font-size:11px;font-weight:700;padding:4px 12px;border-radius:20px;letter-spacing:1px;">{sev_label}</span>
+            <span style="color:#334155;font-size:15px;font-weight:600;margin-left:12px;">{triage.get('chief_complaint', 'N/A')}</span>
+          </td>
+        </tr>
+      </table>
+    </td>
+  </tr>
+
+  <!-- Caller Info -->
+  <tr>
+    <td style="padding:24px 40px 0;">
+      <h2 style="color:#0f172a;font-size:14px;text-transform:uppercase;letter-spacing:1px;margin:0 0 12px;border-bottom:1px solid #e2e8f0;padding-bottom:8px;">Caller Information</h2>
+      <table width="100%" cellpadding="0" cellspacing="0">
+        <tr>
+          <td style="padding:6px 0;color:#64748b;font-size:13px;width:100px;">Name</td>
+          <td style="padding:6px 0;color:#0f172a;font-size:14px;font-weight:600;">{caller.get('name', 'N/A')}</td>
+        </tr>
+        <tr>
+          <td style="padding:6px 0;color:#64748b;font-size:13px;">Phone</td>
+          <td style="padding:6px 0;color:#0f172a;font-size:14px;font-weight:600;">{caller.get('phone', 'N/A')}</td>
+        </tr>
+        <tr>
+          <td style="padding:6px 0;color:#64748b;font-size:13px;">Email</td>
+          <td style="padding:6px 0;color:#0f172a;font-size:14px;font-weight:600;">{caller.get('email', 'N/A')}</td>
+        </tr>
+      </table>
+    </td>
+  </tr>
+
+  <!-- Assessment -->
+  <tr>
+    <td style="padding:24px 40px 0;">
+      <h2 style="color:#0f172a;font-size:14px;text-transform:uppercase;letter-spacing:1px;margin:0 0 12px;border-bottom:1px solid #e2e8f0;padding-bottom:8px;">Assessment</h2>
+
+      <div style="margin-bottom:16px;">
+        <div style="color:#64748b;font-size:12px;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px;">Findings</div>
+        <div style="color:#0f172a;font-size:14px;line-height:1.6;background:#f8fafc;padding:12px 16px;border-radius:8px;">{triage.get('findings', 'N/A')}</div>
+      </div>
+
+      <div style="margin-bottom:16px;">
+        <div style="color:#64748b;font-size:12px;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px;">Suspected Conditions</div>
+        <div style="color:#0f172a;font-size:14px;line-height:1.6;background:#f8fafc;padding:12px 16px;border-radius:8px;">{triage.get('suspected_conditions', 'N/A')}</div>
+      </div>
+
+      <div style="margin-bottom:16px;">
+        <div style="color:#64748b;font-size:12px;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px;">Recommended Action</div>
+        <div style="color:#0f172a;font-size:14px;line-height:1.6;background:{sev_bg};padding:12px 16px;border-radius:8px;border-left:3px solid {sev_color};font-weight:600;">{triage.get('recommended_action', 'N/A')}</div>
+      </div>
+
+      <div style="margin-bottom:8px;">
+        <div style="color:#64748b;font-size:12px;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px;">First Aid Given</div>
+        <div style="color:#0f172a;font-size:14px;line-height:1.6;background:#f8fafc;padding:12px 16px;border-radius:8px;">{triage.get('first_aid_given', 'None')}</div>
+      </div>
+    </td>
+  </tr>
+
+  <!-- Footer -->
+  <tr>
+    <td style="padding:32px 40px;margin-top:24px;">
+      <div style="border-top:1px solid #e2e8f0;padding-top:20px;text-align:center;">
+        <p style="color:#94a3b8;font-size:12px;margin:0 0 4px;">This report was generated by an AI triage system and is not a medical diagnosis.</p>
+        <p style="color:#94a3b8;font-size:12px;margin:0 0 4px;">For emergencies, call <strong style="color:#64748b;">999</strong> or <strong style="color:#64748b;">112</strong></p>
+        <p style="color:#cbd5e1;font-size:11px;margin:12px 0 0;">Medical AI Triage System</p>
+      </div>
+    </td>
+  </tr>
+
+</table>
+</td></tr>
+</table>
+</body>
+</html>"""
