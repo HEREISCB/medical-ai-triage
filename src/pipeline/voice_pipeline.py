@@ -34,11 +34,12 @@ CALLER INFO (collected before the call):
 
 YOUR BEHAVIOR:
 - You are calm, direct, and in control. Like a police dispatcher during a crisis.
-- You acknowledge what the caller says immediately. "Okay, I hear you."
+- ALWAYS address the caller by their name ({caller_name}). Use it naturally throughout the conversation.
+- DO NOT repeat the same acknowledgment phrase. Vary your responses: "Got it", "Right", "Okay {caller_name}", "Understood", or just go straight to the next question. NEVER say "Okay, I hear you" more than once.
 - You ask ONE question at a time. Short. Clear.
 - Your questions are LOGICAL based on what they tell you. If they say "my hand hurts", you ask "What happened to your hand?" then "Can you move your fingers?" — not "Can you swallow?"
 - You sound like a real human dispatcher, not a robot reading a script.
-- You are empathetic but efficient. No wasted words.
+- You are empathetic but efficient. No wasted words. Keep responses under 2 sentences.
 
 CRITICAL RULES:
 1. NEVER tell the caller what condition they might have. No "this sounds like a fracture." Just ask questions.
@@ -79,9 +80,9 @@ class TriageAgent(Agent):
         self.caller_email = caller_email
 
     async def on_enter(self):
-        # Greet using the caller's name
-        self.session.generate_reply(
-            instructions=f"The caller's name is {self.caller_name}. Greet them by name briefly and ask what's going on. One sentence max."
+        self.session.say(
+            f"Hey {self.caller_name}, what's going on? Tell me what happened.",
+            add_to_chat_ctx=True,
         )
 
     @function_tool()
@@ -133,12 +134,22 @@ async def entrypoint(ctx: JobContext):
     """LiveKit agent entrypoint."""
     await ctx.connect()
 
-    # Get caller info from room metadata (set by the web UI)
-    metadata = ctx.room.metadata or "{}"
-    try:
-        caller_info = json.loads(metadata)
-    except json.JSONDecodeError:
-        caller_info = {}
+    # Get caller info from participant metadata
+    caller_info = {}
+    for participant in ctx.room.remote_participants.values():
+        if participant.metadata:
+            try:
+                caller_info = json.loads(participant.metadata)
+                break
+            except json.JSONDecodeError:
+                pass
+
+    # Also check room metadata as fallback
+    if not caller_info and ctx.room.metadata:
+        try:
+            caller_info = json.loads(ctx.room.metadata)
+        except json.JSONDecodeError:
+            pass
 
     caller_name = caller_info.get("name", "there")
     caller_phone = caller_info.get("phone", "")

@@ -6,7 +6,7 @@ import secrets
 
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse
-from livekit.api import AccessToken, VideoGrants, LiveKitAPI
+from livekit.api import AccessToken, VideoGrants
 from pydantic import BaseModel
 
 from src.config import settings
@@ -44,27 +44,12 @@ async def start_call(req: StartCallRequest):
         "email": req.email,
     })
 
-    # Create the room with metadata
-    lk_api = LiveKitAPI(
-        url=settings.livekit_url,
-        api_key=settings.livekit_api_key,
-        api_secret=settings.livekit_api_secret,
-    )
-    try:
-        await lk_api.room.create_room(
-            name=room_name,
-            metadata=metadata,
-        )
-    except Exception as e:
-        logger.warning("Room creation note: %s", e)
-    finally:
-        await lk_api.aclose()
-
-    # Generate caller token
+    # Generate caller token with metadata embedded
     token = (
         AccessToken(settings.livekit_api_key, settings.livekit_api_secret)
         .with_identity(f"caller-{secrets.token_hex(4)}")
-        .with_grants(VideoGrants(room_join=True, room=room_name))
+        .with_metadata(metadata)
+        .with_grants(VideoGrants(room_join=True, room=room_name, room_create=True))
     )
 
     logger.info("Call started: room=%s caller=%s", room_name, req.name)
