@@ -1,21 +1,25 @@
-"""Voice triage pipeline using FastAPI WebSocket + Deepgram APIs directly.
+"""Voice triage agent using LiveKit Agents SDK.
 
-Single-port: FastAPI handles both HTTP and WebSocket on port 8000.
-Uses Deepgram APIs directly (no SDK version issues).
-
-Flow:
-  Client mic -> WebSocket -> Deepgram STT -> Triage Logic -> Deepgram TTS -> WebSocket -> Client speaker
+LiveKit handles all the hard parts (WebRTC, audio, VAD, turn-taking).
+We just plug in Deepgram STT/TTS and our triage logic.
 """
 
-import asyncio
 import json
 import logging
 import uuid
 
-import httpx
-import websockets
-
-from fastapi import WebSocket
+from livekit.agents import (
+    Agent,
+    AgentSession,
+    ChatContext,
+    ChatMessage,
+    JobContext,
+    WorkerOptions,
+    cli,
+)
+from livekit.agents.stt import STT
+from livekit.agents.tts import TTS
+from livekit.plugins import deepgram, silero
 
 from src.config import settings
 from src.nlu.extractor import extract_structured_data, classify_complaint
@@ -37,99 +41,37 @@ PROTOCOL_STATES = (
     TriageState.GENERAL_PROTOCOL,
 )
 
-DEEPGRAM_STT_URL = (
-    "wss://api.deepgram.com/v1/listen"
-    "?model=nova-2&language=en&encoding=linear16&sample_rate=16000"
-    "&channels=1&interim_results=false&utterance_end_ms=1500&endpointing=300"
-)
 
-DEEPGRAM_TTS_URL = "https://api.deepgram.com/v1/speak?model=aura-asteria-en&encoding=linear16&container=wav&sample_rate=24000"
+class TriageAgent(Agent):
+    """LiveKit Agent that runs the medical triage conversation."""
 
-
-class TriageCall:
-    """Manages a single triage call session."""
-
-    def __init__(self, websocket: WebSocket):
-        self.ws = websocket
-        self.session = TriageSession(session_id=str(uuid.uuid4()))
-        self.machine = TriageStateMachine(self.session)
+    def __init__(self):
+        super().__init__(
+            instructions=(
+                "You are a medical triage AI assistant. You ONLY ask questions to "
+                "understand the emergency. You NEVER reveal medical conditions or "
+                "diagnoses to the caller. You ask clear, simple questions and note "
+                "findings internally."
+            ),
+        )
+        self.triage_session = TriageSession(session_id=str(uuid.uuid4()))
+        self.machine = TriageStateMachine(self.triage_session)
         self.low_confidence_streak = 0
-        self._dg_ws = None
-        self._processing = False
 
-    async def run(self):
-        """Run the full triage call."""
-        logger.info("Call started: %s", self.session.session_id)
-
-        # Send greeting via TTS
+    async def on_enter(self):
+        """Called when the agent enters the session. Send greeting."""
         greeting = get_current_question(TriageState.GREETING, 0, {"caller_name": ""})
         if greeting:
-            await self._speak(greeting)
+            self.session.say(greeting)
 
-        # Connect to Deepgram STT WebSocket
-        headers = {"Authorization": f"Token {settings.deepgram_api_key}"}
+    async def on_user_turn_completed(self, turn_ctx, message: ChatMessage):
+        """Called when the user finishes speaking. Process through triage."""
+        caller_text = message.text_content.strip()
+        if not caller_text:
+            return
 
-        try:
-            async with websockets.connect(DEEPGRAM_STT_URL, additional_headers=headers) as dg_ws:
-                self._dg_ws = dg_ws
-                logger.info("Deepgram STT connected")
+        logger.info("Caller said: '%s' (state: %s)", caller_text, self.triage_session.state.value)
 
-                # Run two tasks: forward audio to Deepgram, and listen for transcripts
-                await asyncio.gather(
-                    self._forward_audio_to_deepgram(dg_ws),
-                    self._listen_for_transcripts(dg_ws),
-                )
-
-        except Exception as e:
-            logger.error("Deepgram connection error: %s", e)
-        finally:
-            report = self.machine.get_triage_report()
-            logger.info("CALL ENDED. Triage report: %s", json.dumps(report, indent=2))
-
-    async def _forward_audio_to_deepgram(self, dg_ws):
-        """Forward audio from the client WebSocket to Deepgram STT."""
-        try:
-            while True:
-                data = await self.ws.receive_bytes()
-                await dg_ws.send(data)
-        except Exception as e:
-            logger.info("Client audio stream ended: %s", type(e).__name__)
-            # Send close signal to Deepgram
-            try:
-                await dg_ws.send(json.dumps({"type": "CloseStream"}))
-            except Exception:
-                pass
-
-    async def _listen_for_transcripts(self, dg_ws):
-        """Listen for transcription results from Deepgram."""
-        try:
-            async for message in dg_ws:
-                data = json.loads(message)
-
-                # Only process final transcripts
-                if data.get("type") == "Results" and data.get("is_final"):
-                    transcript = (
-                        data.get("channel", {})
-                        .get("alternatives", [{}])[0]
-                        .get("transcript", "")
-                        .strip()
-                    )
-                    if transcript:
-                        logger.info("Caller said: '%s' (state: %s)", transcript, self.session.state.value)
-                        if not self._processing:
-                            self._processing = True
-                            try:
-                                await self._process_caller_input(transcript)
-                            finally:
-                                self._processing = False
-
-        except websockets.exceptions.ConnectionClosed:
-            logger.info("Deepgram STT connection closed")
-        except Exception as e:
-            logger.error("Transcript listener error: %s", e)
-
-    async def _process_caller_input(self, caller_text: str):
-        """Process what the caller said through the triage pipeline."""
         # Check danger keywords
         danger_matches = check_danger_keywords(caller_text)
         if danger_matches:
@@ -137,28 +79,26 @@ class TriageCall:
 
         # Check escalation
         escalate, reason = should_escalate(
-            self.session.turn_count,
+            self.triage_session.turn_count,
             self.low_confidence_streak,
             caller_text,
-            self.session.severity.value,
+            self.triage_session.severity.value,
         )
         if escalate:
             logger.warning("Escalating: %s", reason)
-            self.session.internal_notes.append(f"Escalated: {reason}")
-            await self._speak(ESCALATION_TEXT)
-            self.session.state = TriageState.CALL_END
-            report = self.machine.get_triage_report()
-            logger.info("TRIAGE REPORT: %s", json.dumps(report, indent=2))
+            self.triage_session.internal_notes.append(f"Escalated: {reason}")
+            turn_ctx.say(sanitize_response(ESCALATION_TEXT))
+            self.triage_session.state = TriageState.CALL_END
+            self._log_report()
             return
 
-        # Get context for NLU
+        # NLU extraction
         question_context = self._get_current_question_text() or ""
         expected_fields = self._get_expected_fields()
 
-        # NLU extraction via Groq
         nlu_result = await extract_structured_data(
             caller_text=caller_text,
-            state=self.session.state,
+            state=self.triage_session.state,
             question_asked=question_context,
             expected_fields=expected_fields,
         )
@@ -171,88 +111,85 @@ class TriageCall:
             self.low_confidence_streak = 0
 
         # Chief complaint classification
-        if self.session.state == TriageState.CHIEF_COMPLAINT:
+        if self.triage_session.state == TriageState.CHIEF_COMPLAINT:
             if not nlu_result.get("category"):
                 category = await classify_complaint(caller_text)
                 nlu_result["category"] = category
             nlu_result["complaint_text"] = caller_text
 
-        # Protocol completion check
-        if self.session.state in PROTOCOL_STATES:
-            if is_protocol_complete(self.session.state, self.session.current_protocol_step + 1):
+        # Protocol completion
+        if self.triage_session.state in PROTOCOL_STATES:
+            if is_protocol_complete(self.triage_session.state, self.triage_session.current_protocol_step + 1):
                 nlu_result["protocol_complete"] = True
 
         # State machine transition
         new_state = self.machine.process_nlu_result(nlu_result)
-        logger.info("State -> %s (severity: %s)", new_state.value, self.session.severity.value)
+        logger.info("State -> %s (severity: %s)", new_state.value, self.triage_session.severity.value)
 
-        # Generate and speak response
+        # Respond
         response = self._get_response_for_state()
         if response:
             response = sanitize_response(response)
-            await self._speak(response)
+            turn_ctx.say(response)
 
-        # Check if done
-        if self.session.state == TriageState.CALL_END:
-            report = self.machine.get_triage_report()
-            logger.info("TRIAGE COMPLETE: %s", json.dumps(report, indent=2))
-
-    async def _speak(self, text: str):
-        """Convert text to speech via Deepgram TTS REST API and send audio to client."""
-        try:
-            async with httpx.AsyncClient() as client:
-                response = await client.post(
-                    DEEPGRAM_TTS_URL,
-                    headers={
-                        "Authorization": f"Token {settings.deepgram_api_key}",
-                        "Content-Type": "application/json",
-                    },
-                    json={"text": text},
-                    timeout=15.0,
-                )
-
-                if response.status_code == 200:
-                    await self.ws.send_bytes(response.content)
-                    logger.info("Spoke: %s", text[:80])
-                else:
-                    logger.error("TTS error: %s %s", response.status_code, response.text)
-
-        except Exception as e:
-            logger.error("TTS error: %s", e)
-            # Fallback: send as text
-            try:
-                await self.ws.send_json({"type": "text", "message": text})
-            except Exception:
-                pass
+        if self.triage_session.state == TriageState.CALL_END:
+            self._log_report()
 
     def _get_current_question_text(self) -> str | None:
-        state = self.session.state
-        step = self.session.current_protocol_step if state in PROTOCOL_STATES else 0
-        return get_current_question(state, step, {"caller_name": self.session.caller_name})
+        state = self.triage_session.state
+        step = self.triage_session.current_protocol_step if state in PROTOCOL_STATES else 0
+        return get_current_question(state, step, {"caller_name": self.triage_session.caller_name})
 
     def _get_expected_fields(self) -> str:
-        state = self.session.state
+        state = self.triage_session.state
         questions = QUESTIONS.get(state, [])
-        step = self.session.current_protocol_step if state in PROTOCOL_STATES else 0
+        step = self.triage_session.current_protocol_step if state in PROTOCOL_STATES else 0
         if step < len(questions):
             return questions[step].get("expect", "")
         return ""
 
     def _get_response_for_state(self) -> str | None:
-        state = self.session.state
-
+        state = self.triage_session.state
         if state == TriageState.CALL_END:
             return CALL_END_TEXT
         if state == TriageState.HUMAN_ESCALATION:
             return ESCALATION_TEXT
         if state == TriageState.PRE_ARRIVAL_INSTRUCTIONS:
-            all_findings = {**self.session.danger_sign_findings, **self.session.protocol_findings}
+            all_findings = {**self.triage_session.danger_sign_findings, **self.triage_session.protocol_findings}
             return get_pre_arrival_instructions(
-                self.session.complaint_category, self.session.severity, all_findings,
+                self.triage_session.complaint_category, self.triage_session.severity, all_findings,
             )
-
-        step = self.session.current_protocol_step if state in PROTOCOL_STATES else 0
-        question = get_current_question(state, step, {"caller_name": self.session.caller_name})
+        step = self.triage_session.current_protocol_step if state in PROTOCOL_STATES else 0
+        question = get_current_question(state, step, {"caller_name": self.triage_session.caller_name})
         if question is None and state == TriageState.CONSENT:
             return NO_CONSENT_TEXT
         return question
+
+    def _log_report(self):
+        report = self.machine.get_triage_report()
+        logger.info("TRIAGE REPORT: %s", json.dumps(report, indent=2))
+
+
+async def entrypoint(ctx: JobContext):
+    """LiveKit agent entrypoint — called when a user joins a room."""
+    await ctx.connect()
+
+    session = AgentSession(
+        stt=deepgram.STT(api_key=settings.deepgram_api_key),
+        tts=deepgram.TTS(api_key=settings.deepgram_api_key, voice="aura-asteria-en"),
+        vad=silero.VAD.load(),
+    )
+
+    await session.start(agent=TriageAgent(), room=ctx.room)
+
+
+def run_agent():
+    """Run the LiveKit agent worker."""
+    cli.run_app(
+        WorkerOptions(
+            entrypoint_fnc=entrypoint,
+            api_key=settings.livekit_api_key,
+            api_secret=settings.livekit_api_secret,
+            ws_url=settings.livekit_url,
+        ),
+    )

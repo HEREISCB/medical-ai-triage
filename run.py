@@ -1,12 +1,6 @@
-"""Run the Medical AI Triage server."""
+"""Run the Medical AI Triage agent."""
 
-import uvicorn
-from src.config import settings
+from src.pipeline.voice_pipeline import run_agent
 
 if __name__ == "__main__":
-    uvicorn.run(
-        "src.main:app",
-        host=settings.app_host,
-        port=settings.app_port,
-        reload=False,
-    )
+    run_agent()
