@@ -134,8 +134,10 @@ async def entrypoint(ctx: JobContext):
     """LiveKit agent entrypoint."""
     await ctx.connect()
 
-    # Get caller info from participant metadata
+    # Wait for the caller to join so we can read their metadata
     caller_info = {}
+
+    # Check existing participants first
     for participant in ctx.room.remote_participants.values():
         if participant.metadata:
             try:
@@ -144,12 +146,44 @@ async def entrypoint(ctx: JobContext):
             except json.JSONDecodeError:
                 pass
 
-    # Also check room metadata as fallback
-    if not caller_info and ctx.room.metadata:
-        try:
-            caller_info = json.loads(ctx.room.metadata)
-        except json.JSONDecodeError:
-            pass
+    # If no metadata yet, wait for a participant to join
+    if not caller_info:
+        import asyncio
+        from livekit import rtc
+
+        future = asyncio.get_event_loop().create_future()
+
+        def on_participant_connected(participant: rtc.RemoteParticipant):
+            if participant.metadata and not future.done():
+                try:
+                    future.set_result(json.loads(participant.metadata))
+                except json.JSONDecodeError:
+                    pass
+
+        def on_metadata_changed(participant: rtc.Participant, old_metadata: str, new_metadata: str):
+            if new_metadata and not future.done():
+                try:
+                    future.set_result(json.loads(new_metadata))
+                except json.JSONDecodeError:
+                    pass
+
+        ctx.room.on("participant_connected", on_participant_connected)
+        ctx.room.on("participant_metadata_changed", on_metadata_changed)
+
+        # Also re-check current participants (might have joined during setup)
+        for participant in ctx.room.remote_participants.values():
+            if participant.metadata:
+                try:
+                    caller_info = json.loads(participant.metadata)
+                    break
+                except json.JSONDecodeError:
+                    pass
+
+        if not caller_info:
+            try:
+                caller_info = await asyncio.wait_for(future, timeout=10.0)
+            except asyncio.TimeoutError:
+                logger.warning("Timed out waiting for caller metadata")
 
     caller_name = caller_info.get("name", "there")
     caller_phone = caller_info.get("phone", "")
