@@ -25,7 +25,7 @@ from pipecat.pipeline.task import PipelineParams, PipelineTask
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.services.deepgram.stt import DeepgramSTTService
 from pipecat.services.deepgram.tts import DeepgramTTSService
-from pipecat.transports.websocket_server import WebSocketServerParams, WebSocketServerTransport
+from pipecat.transports.network.websocket_server import WebSocketServerParams, WebSocketServerTransport
 
 from src.config import settings
 from src.nlu.extractor import extract_structured_data, classify_complaint
