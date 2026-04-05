@@ -9,7 +9,7 @@ import logging
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
-from livekit.api import LiveKitAPI, CreateRoomRequest, RoomServiceClient
+from livekit.api import AccessToken, VideoGrants
 
 from src.config import settings
 
@@ -32,7 +32,6 @@ class TokenResponse(BaseModel):
 async def create_token():
     """Create a LiveKit room and return a token for the caller to join."""
     import secrets
-    from livekit.api import AccessToken, VideoGrants
 
     room_name = f"triage-{secrets.token_hex(4)}"
 
