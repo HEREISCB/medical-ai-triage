@@ -1,7 +1,12 @@
 """Run the Medical AI Triage server."""
 
-import asyncio
-from src.main import main
+import uvicorn
+from src.config import settings
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    uvicorn.run(
+        "src.main:app",
+        host=settings.app_host,
+        port=settings.app_port,
+        reload=False,
+    )

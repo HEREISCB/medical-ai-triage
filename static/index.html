@@ -246,12 +246,9 @@
                     sampleRate: SAMPLE_RATE,
                 });
 
-                // Connect to Pipecat's WebSocket server
-                // If WS_URL is set in the page, use it (for tunneled setups)
-                // Otherwise connect to same host on port 8765
-                const wsUrl = window.TRIAGE_WS_URL ||
-                    `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.hostname}:8765`;
-                ws = new WebSocket(wsUrl);
+                // Connect to WebSocket on same host (single port!)
+                const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+                ws = new WebSocket(`${protocol}//${window.location.host}/ws`);
                 ws.binaryType = 'arraybuffer';
 
                 ws.onopen = () => {

@@ -1,21 +1,17 @@
-"""Medical AI Triage server.
+"""FastAPI application for the medical triage system.
 
-Single-port architecture:
-- HTTP server on port 8000 serves the web UI
-- Pipecat WebSocket server on port 8765 handles audio
-- Frontend auto-detects the WS URL from WS_URL env var or same host
-
-For cloudflared: set WS_URL env var to your second tunnel URL,
-OR use the simple approach below that runs both on one process.
+Single port: serves web UI + handles WebSocket audio on port 8000.
+One cloudflared tunnel is all you need.
 """
 
-import asyncio
 import logging
-import os
-from http.server import HTTPServer, SimpleHTTPRequestHandler
-from threading import Thread
+
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi.responses import HTMLResponse
+from fastapi.staticfiles import StaticFiles
 
 from src.config import settings
+from src.pipeline.voice_pipeline import TriageCall
 
 logging.basicConfig(
     level=logging.INFO,
@@ -23,30 +19,37 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-
-def start_http_server():
-    """Serve static files on the configured port in a background thread."""
-    os.chdir("static")
-
-    class Handler(SimpleHTTPRequestHandler):
-        def log_message(self, format, *args):
-            logger.info("HTTP: %s", format % args)
-
-    server = HTTPServer(("0.0.0.0", settings.app_port), Handler)
-    logger.info("HTTP server on http://0.0.0.0:%d", settings.app_port)
-    server.serve_forever()
+app = FastAPI(
+    title="Medical AI Triage",
+    description="Voice-based AI medical triage system",
+    version="0.1.0",
+)
 
 
-async def main():
-    # Start HTTP server for the web UI in a background thread
-    http_thread = Thread(target=start_http_server, daemon=True)
-    http_thread.start()
+@app.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    """WebSocket endpoint for voice triage calls."""
+    await websocket.accept()
+    logger.info("New call connected")
 
-    # Start the Pipecat voice pipeline
-    from src.pipeline.voice_pipeline import run_pipeline
-    logger.info("Starting Pipecat pipeline on ws://0.0.0.0:8765")
-    await run_pipeline()
+    call = TriageCall(websocket)
+    try:
+        await call.run()
+    except WebSocketDisconnect:
+        logger.info("Call disconnected")
+    except Exception as e:
+        logger.error("Call error: %s", e)
 
 
-if __name__ == "__main__":
-    asyncio.run(main())
+@app.get("/api/health")
+async def health():
+    return {"status": "ok"}
+
+
+@app.get("/", response_class=HTMLResponse)
+async def index():
+    try:
+        with open("static/index.html", "r") as f:
+            return HTMLResponse(content=f.read())
+    except FileNotFoundError:
+        return HTMLResponse(content="<h1>Medical AI Triage</h1><p>Static files not found.</p>")

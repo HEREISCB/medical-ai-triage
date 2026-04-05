@@ -1,291 +1,252 @@
-"""Main Pipecat voice pipeline for medical triage.
+"""Voice triage pipeline using FastAPI WebSocket + Deepgram + Groq.
 
-Orchestrates: WebSocket (transport) -> Deepgram STT -> Triage Logic -> Deepgram TTS
+Single-port architecture: FastAPI handles both HTTP and WebSocket on port 8000.
+No Pipecat transport needed — we manage the audio stream directly.
 
-The triage logic is a custom Pipecat processor that:
-1. Receives transcribed text from STT
-2. Runs NLU extraction via Groq
-3. Feeds structured data to the triage state machine
-4. Gets the next question from the question bank
-5. Optionally sanitizes through safety guardrails
-6. Sends the question text to TTS
+Flow:
+  Client mic -> WebSocket -> Deepgram STT -> Triage Logic -> Deepgram TTS -> WebSocket -> Client speaker
 """
 
+import asyncio
+import json
 import logging
 import uuid
 
-from pipecat.frames.frames import (
-    EndFrame,
-    TextFrame,
-    TranscriptionFrame,
+from deepgram import (
+    DeepgramClient,
+    DeepgramClientOptions,
+    LiveTranscriptionEvents,
+    LiveOptions,
 )
-from pipecat.pipeline.pipeline import Pipeline
-from pipecat.pipeline.runner import PipelineRunner
-from pipecat.pipeline.task import PipelineParams, PipelineTask
-from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
-from pipecat.services.deepgram.stt import DeepgramSTTService
-from pipecat.services.deepgram.tts import DeepgramTTSService
-from pipecat.transports.websocket.server import WebsocketServerTransport, WebsocketServerParams
+from fastapi import WebSocket
 
 from src.config import settings
 from src.nlu.extractor import extract_structured_data, classify_complaint
 from src.safety.guardrails import check_danger_keywords, sanitize_response, should_escalate
 from src.safety.disclaimers import ESCALATION_TEXT, CALL_END_TEXT, NO_CONSENT_TEXT
 from src.triage.state_machine import TriageSession, TriageStateMachine
-from src.triage.states import TriageState, Severity
+from src.triage.states import TriageState
 from src.triage.questions import get_current_question, is_protocol_complete, QUESTIONS
 from src.triage.pre_arrival import get_pre_arrival_instructions
 
 logger = logging.getLogger(__name__)
 
+PROTOCOL_STATES = (
+    TriageState.MALARIA_PROTOCOL,
+    TriageState.TRAUMA_PROTOCOL,
+    TriageState.MATERNAL_PROTOCOL,
+    TriageState.RESPIRATORY_PROTOCOL,
+    TriageState.SNAKEBITE_PROTOCOL,
+    TriageState.GENERAL_PROTOCOL,
+)
 
-class TriageProcessor(FrameProcessor):
-    """Custom Pipecat processor that handles the triage conversation flow.
 
-    Sits between STT and TTS in the pipeline. Receives transcribed text,
-    processes it through the triage state machine, and outputs the next
-    question as text for TTS.
-    """
+class TriageCall:
+    """Manages a single triage call session."""
 
-    def __init__(self, session_id: str | None = None):
-        super().__init__()
-        sid = session_id or str(uuid.uuid4())
-        self.session = TriageSession(session_id=sid)
+    def __init__(self, websocket: WebSocket):
+        self.ws = websocket
+        self.session = TriageSession(session_id=str(uuid.uuid4()))
         self.machine = TriageStateMachine(self.session)
         self.low_confidence_streak = 0
-        self._greeting_sent = False
+        self._dg_client = None
+        self._dg_connection = None
+        self._processing = False
 
-    async def process_frame(self, frame, direction: FrameDirection):
-        await super().process_frame(frame, direction)
+    async def run(self):
+        """Run the full triage call."""
+        logger.info("Call started: %s", self.session.session_id)
 
-        if isinstance(frame, TranscriptionFrame):
-            # We got transcribed text from the caller
-            caller_text = frame.text.strip()
-            if not caller_text:
-                await self.push_frame(frame, direction)
-                return
-
-            logger.info("Caller said: %s (state: %s)", caller_text, self.session.state.value)
-
-            # Check for immediate danger keywords
-            danger_matches = check_danger_keywords(caller_text)
-            if danger_matches:
-                logger.warning("Danger keywords detected: %s", danger_matches)
-
-            # Check if we should escalate to human
-            escalate, reason = should_escalate(
-                self.session.turn_count,
-                self.low_confidence_streak,
-                caller_text,
-                self.session.severity.value,
-            )
-            if escalate:
-                logger.warning("Escalating call: %s", reason)
-                self.session.state = TriageState.HUMAN_ESCALATION
-                self.session.internal_notes.append(f"Escalated: {reason}")
-                response = ESCALATION_TEXT
-                await self.push_frame(TextFrame(text=response), FrameDirection.DOWNSTREAM)
-                report = self.machine.get_triage_report()
-                logger.info("Triage report: %s", report)
-                self.session.state = TriageState.CALL_END
-                return
-
-            # Get current question context for NLU
-            question_context = self._get_current_question_text()
-            expected_fields = self._get_expected_fields()
-
-            # NLU extraction
-            nlu_result = await extract_structured_data(
-                caller_text=caller_text,
-                state=self.session.state,
-                question_asked=question_context or "",
-                expected_fields=expected_fields,
-            )
-
-            # Track confidence
-            confidence = nlu_result.get("confidence", 0.8)
-            if confidence < 0.6:
-                self.low_confidence_streak += 1
-            else:
-                self.low_confidence_streak = 0
-
-            # Special handling for chief complaint classification
-            if self.session.state == TriageState.CHIEF_COMPLAINT:
-                if "category" not in nlu_result or not nlu_result.get("category"):
-                    category = await classify_complaint(caller_text)
-                    nlu_result["category"] = category
-                nlu_result["complaint_text"] = caller_text
-
-            # Handle protocol completion
-            if self.session.state in (
-                TriageState.MALARIA_PROTOCOL,
-                TriageState.TRAUMA_PROTOCOL,
-                TriageState.MATERNAL_PROTOCOL,
-                TriageState.RESPIRATORY_PROTOCOL,
-                TriageState.SNAKEBITE_PROTOCOL,
-                TriageState.GENERAL_PROTOCOL,
-            ):
-                if is_protocol_complete(self.session.state, self.session.current_protocol_step + 1):
-                    nlu_result["protocol_complete"] = True
-
-            # Feed to state machine
-            new_state = self.machine.process_nlu_result(nlu_result)
-            logger.info("State transition -> %s (severity: %s)", new_state.value, self.session.severity.value)
-
-            # Generate response based on new state
-            response = self._get_response_for_state()
-            if response:
-                response = sanitize_response(response)
-                await self.push_frame(TextFrame(text=response), FrameDirection.DOWNSTREAM)
-
-            # Check if call is complete
-            if self.session.state == TriageState.CALL_END:
-                report = self.machine.get_triage_report()
-                logger.info("TRIAGE COMPLETE. Report: %s", report)
-                await self.push_frame(EndFrame(), FrameDirection.DOWNSTREAM)
-
-        else:
-            await self.push_frame(frame, direction)
-
-    async def send_greeting(self):
-        """Send the initial greeting. Called when the call connects."""
-        if self._greeting_sent:
-            return
-        self._greeting_sent = True
-        greeting = get_current_question(
-            TriageState.GREETING, 0, {"caller_name": ""}
-        )
+        # Send greeting via TTS
+        greeting = get_current_question(TriageState.GREETING, 0, {"caller_name": ""})
         if greeting:
-            await self.push_frame(TextFrame(text=greeting), FrameDirection.DOWNSTREAM)
+            await self._speak(greeting)
+
+        # Set up Deepgram for live STT
+        config = DeepgramClientOptions(options={"keepalive": "true"})
+        self._dg_client = DeepgramClient(settings.deepgram_api_key, config)
+        self._dg_connection = self._dg_client.listen.asyncwebsocket.v("1")
+
+        # Handle transcription results
+        self._dg_connection.on(LiveTranscriptionEvents.Transcript, self._on_transcript)
+        self._dg_connection.on(LiveTranscriptionEvents.Error, self._on_dg_error)
+
+        options = LiveOptions(
+            model="nova-2",
+            language="en",
+            encoding="linear16",
+            sample_rate=16000,
+            channels=1,
+            interim_results=False,
+            utterance_end_ms="1500",
+            vad_events=True,
+            endpointing=300,
+        )
+
+        if not await self._dg_connection.start(options):
+            logger.error("Failed to connect to Deepgram STT")
+            await self.ws.send_json({"type": "error", "message": "Failed to connect to speech service"})
+            return
+
+        logger.info("Deepgram STT connected")
+
+        # Stream audio from client to Deepgram
+        try:
+            while True:
+                data = await self.ws.receive_bytes()
+                await self._dg_connection.send(data)
+        except Exception as e:
+            logger.info("Client disconnected: %s", e)
+        finally:
+            await self._dg_connection.finish()
+            report = self.machine.get_triage_report()
+            logger.info("CALL ENDED. Triage report: %s", json.dumps(report, indent=2))
+
+    async def _on_transcript(self, connection, result, **kwargs):
+        """Handle a transcription result from Deepgram."""
+        try:
+            transcript = result.channel.alternatives[0].transcript.strip()
+            if not transcript or result.is_final is False:
+                return
+
+            logger.info("Caller said: '%s' (state: %s)", transcript, self.session.state.value)
+
+            # Prevent re-entrant processing
+            if self._processing:
+                return
+            self._processing = True
+
+            try:
+                await self._process_caller_input(transcript)
+            finally:
+                self._processing = False
+
+        except Exception as e:
+            logger.error("Error processing transcript: %s", e)
+
+    async def _on_dg_error(self, connection, error, **kwargs):
+        logger.error("Deepgram STT error: %s", error)
+
+    async def _process_caller_input(self, caller_text: str):
+        """Process what the caller said through the triage pipeline."""
+        # Check danger keywords
+        danger_matches = check_danger_keywords(caller_text)
+        if danger_matches:
+            logger.warning("Danger keywords: %s", danger_matches)
+
+        # Check escalation
+        escalate, reason = should_escalate(
+            self.session.turn_count,
+            self.low_confidence_streak,
+            caller_text,
+            self.session.severity.value,
+        )
+        if escalate:
+            logger.warning("Escalating: %s", reason)
+            self.session.internal_notes.append(f"Escalated: {reason}")
+            await self._speak(ESCALATION_TEXT)
+            self.session.state = TriageState.CALL_END
+            report = self.machine.get_triage_report()
+            logger.info("TRIAGE REPORT: %s", json.dumps(report, indent=2))
+            return
+
+        # Get context for NLU
+        question_context = self._get_current_question_text() or ""
+        expected_fields = self._get_expected_fields()
+
+        # NLU extraction via Groq
+        nlu_result = await extract_structured_data(
+            caller_text=caller_text,
+            state=self.session.state,
+            question_asked=question_context,
+            expected_fields=expected_fields,
+        )
+
+        # Track confidence
+        confidence = nlu_result.get("confidence", 0.8)
+        if confidence < 0.6:
+            self.low_confidence_streak += 1
+        else:
+            self.low_confidence_streak = 0
+
+        # Chief complaint classification
+        if self.session.state == TriageState.CHIEF_COMPLAINT:
+            if not nlu_result.get("category"):
+                category = await classify_complaint(caller_text)
+                nlu_result["category"] = category
+            nlu_result["complaint_text"] = caller_text
+
+        # Protocol completion check
+        if self.session.state in PROTOCOL_STATES:
+            if is_protocol_complete(self.session.state, self.session.current_protocol_step + 1):
+                nlu_result["protocol_complete"] = True
+
+        # State machine transition
+        new_state = self.machine.process_nlu_result(nlu_result)
+        logger.info("State -> %s (severity: %s)", new_state.value, self.session.severity.value)
+
+        # Generate and speak response
+        response = self._get_response_for_state()
+        if response:
+            response = sanitize_response(response)
+            await self._speak(response)
+
+        # Check if done
+        if self.session.state == TriageState.CALL_END:
+            report = self.machine.get_triage_report()
+            logger.info("TRIAGE COMPLETE: %s", json.dumps(report, indent=2))
+
+    async def _speak(self, text: str):
+        """Convert text to speech via Deepgram TTS and send audio to client."""
+        try:
+            dg = DeepgramClient(settings.deepgram_api_key)
+            options = {"model": "aura-asteria-en", "encoding": "linear16", "sample_rate": 16000}
+
+            response = await dg.speak.asyncrest.v("1").stream_raw({"text": text}, options)
+
+            # Send audio chunks to client
+            audio_data = response.stream.read()
+            if audio_data:
+                # Send as binary WebSocket message
+                await self.ws.send_bytes(audio_data)
+
+            logger.info("Spoke: %s", text[:80])
+        except Exception as e:
+            logger.error("TTS error: %s", e)
+            # Fallback: send text
+            try:
+                await self.ws.send_json({"type": "text", "message": text})
+            except Exception:
+                pass
 
     def _get_current_question_text(self) -> str | None:
-        """Get the text of the current question being asked."""
         state = self.session.state
-        step = self.session.current_protocol_step if state in (
-            TriageState.MALARIA_PROTOCOL,
-            TriageState.TRAUMA_PROTOCOL,
-            TriageState.MATERNAL_PROTOCOL,
-            TriageState.RESPIRATORY_PROTOCOL,
-            TriageState.SNAKEBITE_PROTOCOL,
-            TriageState.GENERAL_PROTOCOL,
-        ) else 0
-
-        return get_current_question(
-            state, step,
-            {"caller_name": self.session.caller_name},
-        )
+        step = self.session.current_protocol_step if state in PROTOCOL_STATES else 0
+        return get_current_question(state, step, {"caller_name": self.session.caller_name})
 
     def _get_expected_fields(self) -> str:
-        """Get the expected extraction fields for the current state."""
         state = self.session.state
         questions = QUESTIONS.get(state, [])
-        step = self.session.current_protocol_step if state in (
-            TriageState.MALARIA_PROTOCOL,
-            TriageState.TRAUMA_PROTOCOL,
-            TriageState.MATERNAL_PROTOCOL,
-            TriageState.RESPIRATORY_PROTOCOL,
-            TriageState.SNAKEBITE_PROTOCOL,
-            TriageState.GENERAL_PROTOCOL,
-        ) else 0
-
+        step = self.session.current_protocol_step if state in PROTOCOL_STATES else 0
         if step < len(questions):
             return questions[step].get("expect", "")
         return ""
 
     def _get_response_for_state(self) -> str | None:
-        """Get the appropriate response for the current state."""
         state = self.session.state
 
         if state == TriageState.CALL_END:
             return CALL_END_TEXT
-
         if state == TriageState.HUMAN_ESCALATION:
             return ESCALATION_TEXT
-
         if state == TriageState.PRE_ARRIVAL_INSTRUCTIONS:
-            all_findings = {
-                **self.session.danger_sign_findings,
-                **self.session.protocol_findings,
-            }
-            instructions = get_pre_arrival_instructions(
-                self.session.complaint_category,
-                self.session.severity,
-                all_findings,
+            all_findings = {**self.session.danger_sign_findings, **self.session.protocol_findings}
+            return get_pre_arrival_instructions(
+                self.session.complaint_category, self.session.severity, all_findings,
             )
-            return instructions
 
-        # For all other states, get the next question
-        step = 0
-        if state in (
-            TriageState.MALARIA_PROTOCOL,
-            TriageState.TRAUMA_PROTOCOL,
-            TriageState.MATERNAL_PROTOCOL,
-            TriageState.RESPIRATORY_PROTOCOL,
-            TriageState.SNAKEBITE_PROTOCOL,
-            TriageState.GENERAL_PROTOCOL,
-        ):
-            step = self.session.current_protocol_step
-
-        question = get_current_question(
-            state, step,
-            {"caller_name": self.session.caller_name},
-        )
-
+        step = self.session.current_protocol_step if state in PROTOCOL_STATES else 0
+        question = get_current_question(state, step, {"caller_name": self.session.caller_name})
         if question is None and state == TriageState.CONSENT:
             return NO_CONSENT_TEXT
-
         return question
-
-
-async def run_pipeline():
-    """Start the Pipecat voice pipeline with its own WebSocket server on port 8765."""
-    transport = WebsocketServerTransport(
-        params=WebsocketServerParams(
-            audio_in_enabled=True,
-            audio_out_enabled=True,
-            add_wav_header=True,
-            host="0.0.0.0",
-            port=8765,
-        )
-    )
-
-    stt = DeepgramSTTService(
-        api_key=settings.deepgram_api_key,
-    )
-
-    tts = DeepgramTTSService(
-        api_key=settings.deepgram_api_key,
-    )
-
-    triage = TriageProcessor()
-
-    pipeline = Pipeline([
-        transport.input(),
-        stt,
-        triage,
-        tts,
-        transport.output(),
-    ])
-
-    task = PipelineTask(
-        pipeline,
-        params=PipelineParams(
-            allow_interruptions=True,
-            enable_metrics=True,
-        ),
-    )
-
-    @transport.event_handler("on_client_connected")
-    async def on_connected(transport, client):
-        logger.info("Caller connected via WebSocket")
-        await triage.send_greeting()
-
-    @transport.event_handler("on_client_disconnected")
-    async def on_disconnected(transport, client):
-        logger.info("Caller disconnected")
-        report = triage.machine.get_triage_report()
-        logger.info("Final triage report: %s", report)
-        await task.queue_frame(EndFrame())
-
-    runner = PipelineRunner(handle_sigint=False)
-    await runner.run(task)
