@@ -12,41 +12,51 @@
             min-height: 100vh; display: flex; flex-direction: column;
             align-items: center; justify-content: center;
         }
-        .container { text-align: center; max-width: 480px; padding: 40px 24px; }
+        .container { text-align: center; max-width: 480px; padding: 40px 24px; width: 100%; }
         .logo { font-size: 48px; margin-bottom: 8px; }
         h1 { font-size: 28px; font-weight: 700; margin-bottom: 8px; color: #fff; }
-        .subtitle { font-size: 15px; color: #8892a4; margin-bottom: 40px; line-height: 1.5; }
-        #call-btn {
-            width: 140px; height: 140px; border-radius: 50%; border: none;
-            background: linear-gradient(135deg, #22c55e, #16a34a); color: white;
-            font-size: 18px; font-weight: 600; cursor: pointer;
-            display: flex; flex-direction: column; align-items: center;
-            justify-content: center; gap: 8px; margin: 0 auto 32px;
-            transition: all 0.3s ease; box-shadow: 0 0 40px rgba(34,197,94,0.3);
+        .subtitle { font-size: 15px; color: #8892a4; margin-bottom: 32px; line-height: 1.5; }
+
+        /* Form */
+        .form-group { margin-bottom: 16px; text-align: left; }
+        .form-group label { display: block; font-size: 13px; color: #8892a4; margin-bottom: 6px; font-weight: 500; }
+        .form-group input {
+            width: 100%; padding: 12px 16px; background: #131825; border: 1px solid #2a3042;
+            border-radius: 8px; color: #e0e6ed; font-size: 15px; outline: none;
         }
-        #call-btn:hover { transform: scale(1.05); box-shadow: 0 0 60px rgba(34,197,94,0.4); }
+        .form-group input:focus { border-color: #22c55e; }
+        .form-group input::placeholder { color: #4a5568; }
+        .data-notice { font-size: 11px; color: #4a5568; margin-bottom: 24px; text-align: left; }
+
+        /* Call button */
+        #call-btn {
+            width: 100%; padding: 16px; border-radius: 12px; border: none;
+            background: linear-gradient(135deg, #22c55e, #16a34a); color: white;
+            font-size: 17px; font-weight: 600; cursor: pointer;
+            transition: all 0.3s ease; box-shadow: 0 4px 20px rgba(34,197,94,0.3);
+        }
+        #call-btn:hover { transform: translateY(-1px); box-shadow: 0 6px 30px rgba(34,197,94,0.4); }
+        #call-btn:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
         #call-btn.active {
             background: linear-gradient(135deg, #ef4444, #dc2626);
-            box-shadow: 0 0 40px rgba(239,68,68,0.3); animation: pulse 2s infinite;
+            box-shadow: 0 4px 20px rgba(239,68,68,0.3);
         }
         #call-btn.connecting {
             background: linear-gradient(135deg, #f59e0b, #d97706);
-            box-shadow: 0 0 40px rgba(245,158,11,0.3); cursor: wait;
+            box-shadow: 0 4px 20px rgba(245,158,11,0.3);
         }
-        #call-btn svg { width: 36px; height: 36px; }
-        @keyframes pulse {
-            0%,100% { box-shadow: 0 0 40px rgba(239,68,68,0.3); }
-            50% { box-shadow: 0 0 60px rgba(239,68,68,0.5); }
-        }
-        #status { font-size: 16px; font-weight: 500; margin-bottom: 16px; min-height: 24px; }
+
+        /* Call UI (hidden initially) */
+        .call-ui { display: none; }
+        .call-ui.active { display: block; }
+        #status { font-size: 16px; font-weight: 500; margin: 16px 0; min-height: 24px; }
         #status.connected { color: #22c55e; }
         #status.connecting { color: #f59e0b; }
         #status.error { color: #ef4444; }
         .timer {
-            font-size: 32px; font-weight: 300; font-variant-numeric: tabular-nums;
-            color: #64748b; margin-bottom: 24px; min-height: 40px;
+            font-size: 40px; font-weight: 300; font-variant-numeric: tabular-nums;
+            color: #e0e6ed; margin-bottom: 24px;
         }
-        .timer.active { color: #e0e6ed; }
         .visualizer { display: flex; align-items: center; justify-content: center; gap: 4px; height: 40px; margin-bottom: 24px; }
         .visualizer .bar { width: 4px; background: #22c55e; border-radius: 2px; height: 4px; }
         .visualizer.active .bar { animation: equalizer 0.5s ease infinite alternate; }
@@ -68,60 +78,77 @@
     <div class="container">
         <div class="logo">&#127973;</div>
         <h1>Medical AI Triage</h1>
-        <p class="subtitle">
-            AI-powered emergency medical assessment.<br>
-            Press the button to start a voice call with the AI assistant.
-        </p>
-        <div class="visualizer" id="visualizer">
-            <div class="bar"></div><div class="bar"></div><div class="bar"></div>
-            <div class="bar"></div><div class="bar"></div><div class="bar"></div><div class="bar"></div>
+        <p class="subtitle">Emergency medical assessment powered by AI.</p>
+
+        <!-- INTAKE FORM -->
+        <div id="intake-form">
+            <div class="form-group">
+                <label>Full Name</label>
+                <input type="text" id="caller-name" placeholder="Your name" required>
+            </div>
+            <div class="form-group">
+                <label>Phone Number</label>
+                <input type="tel" id="caller-phone" placeholder="+254 7XX XXX XXX" required>
+            </div>
+            <div class="form-group">
+                <label>Email Address</label>
+                <input type="email" id="caller-email" placeholder="you@example.com" required>
+            </div>
+            <p class="data-notice">This information will be permanently saved and shared with emergency medical services.</p>
+            <button id="call-btn" onclick="startCall()">Start Emergency Call</button>
         </div>
-        <button id="call-btn" onclick="toggleCall()">
-            <svg viewBox="0 0 24 24" fill="currentColor">
-                <path d="M6.62 10.79c1.44 2.83 3.76 5.14 6.59 6.59l2.2-2.2c.27-.27.67-.36 1.02-.24 1.12.37 2.33.57 3.57.57.55 0 1 .45 1 1V20c0 .55-.45 1-1 1-9.39 0-17-7.61-17-17 0-.55.45-1 1-1h3.5c.55 0 1 .45 1 1 0 1.25.2 2.45.57 3.57.11.35.03.74-.25 1.02l-2.2 2.2z"/>
-            </svg>
-            <span>Start Call</span>
-        </button>
-        <div id="status"></div>
-        <div class="timer" id="timer"></div>
+
+        <!-- CALL UI (shown during call) -->
+        <div id="call-ui" class="call-ui">
+            <div class="visualizer" id="visualizer">
+                <div class="bar"></div><div class="bar"></div><div class="bar"></div>
+                <div class="bar"></div><div class="bar"></div><div class="bar"></div><div class="bar"></div>
+            </div>
+            <div id="status">Connecting...</div>
+            <div class="timer" id="timer">00:00</div>
+            <button id="call-btn-end" class="active" onclick="endCall()"
+                style="width:100%;padding:16px;border-radius:12px;border:none;background:linear-gradient(135deg,#ef4444,#dc2626);color:white;font-size:17px;font-weight:600;cursor:pointer;">
+                End Call
+            </button>
+        </div>
+
         <div class="disclaimer">
-            This is an AI assistant, not a medical professional. It asks questions to help
-            determine urgency. For immediate life-threatening emergencies, call 999 or 112.
+            For immediate life-threatening emergencies, call 999 or 112 directly.
         </div>
     </div>
 
     <script src="https://cdn.jsdelivr.net/npm/livekit-client@2/dist/livekit-client.umd.js"></script>
     <script>
         let room = null;
-        let isInCall = false;
         let timerInterval = null;
         let callStartTime = null;
 
-        const btn = document.getElementById('call-btn');
-        const statusEl = document.getElementById('status');
-        const timerEl = document.getElementById('timer');
-        const visualizer = document.getElementById('visualizer');
-
-        function setStatus(text, cls) { statusEl.textContent = text; statusEl.className = cls || ''; }
-        function updateTimer() {
-            if (!callStartTime) return;
-            const s = Math.floor((Date.now() - callStartTime) / 1000);
-            timerEl.textContent = `${String(Math.floor(s/60)).padStart(2,'0')}:${String(s%60).padStart(2,'0')}`;
-        }
-
-        async function toggleCall() {
-            if (isInCall) { endCall(); } else { startCall(); }
-        }
-
         async function startCall() {
+            const name = document.getElementById('caller-name').value.trim();
+            const phone = document.getElementById('caller-phone').value.trim();
+            const email = document.getElementById('caller-email').value.trim();
+
+            if (!name || !phone || !email) {
+                alert('Please fill in all fields.');
+                return;
+            }
+
+            const btn = document.getElementById('call-btn');
+            btn.disabled = true;
+            btn.textContent = 'Connecting...';
             btn.className = 'connecting';
-            btn.querySelector('span').textContent = 'Connecting...';
-            setStatus('Connecting to AI assistant...', 'connecting');
 
             try {
-                // Get a token from our server
-                const res = await fetch('/api/token', { method: 'POST' });
+                const res = await fetch('/api/start-call', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ name, phone, email }),
+                });
                 const data = await res.json();
+
+                // Show call UI, hide form
+                document.getElementById('intake-form').style.display = 'none';
+                document.getElementById('call-ui').className = 'call-ui active';
 
                 // Connect to LiveKit
                 room = new LivekitClient.Room();
@@ -133,28 +160,21 @@
                     }
                 });
 
-                room.on(LivekitClient.RoomEvent.Disconnected, () => {
-                    cleanupCall();
-                });
+                room.on(LivekitClient.RoomEvent.Disconnected, () => { cleanupCall(); });
 
                 await room.connect(data.url, data.token);
-
-                // Publish microphone
                 await room.localParticipant.setMicrophoneEnabled(true);
 
-                isInCall = true;
-                btn.className = 'active';
-                btn.querySelector('span').textContent = 'End Call';
-                setStatus('Connected - AI is listening', 'connected');
-                visualizer.classList.add('active');
+                document.getElementById('status').textContent = 'Connected - Speak now';
+                document.getElementById('status').className = 'connected';
+                document.getElementById('visualizer').classList.add('active');
                 callStartTime = Date.now();
-                timerEl.classList.add('active');
                 timerInterval = setInterval(updateTimer, 1000);
 
             } catch (err) {
-                console.error('Failed to connect:', err);
-                setStatus('Failed to connect. Please try again.', 'error');
-                cleanupCall();
+                console.error('Failed:', err);
+                document.getElementById('status').textContent = 'Failed to connect. Refresh and try again.';
+                document.getElementById('status').className = 'error';
             }
         }
 
@@ -164,16 +184,20 @@
         }
 
         function cleanupCall() {
-            isInCall = false;
             if (room) { room.disconnect(); room = null; }
             if (timerInterval) { clearInterval(timerInterval); timerInterval = null; }
-            btn.className = '';
-            btn.querySelector('span').textContent = 'Start Call';
-            visualizer.classList.remove('active');
-            timerEl.classList.remove('active');
-            if (statusEl.className !== 'error') setStatus('Call ended', '');
-            // Remove any attached audio elements
+            document.getElementById('visualizer').classList.remove('active');
+            document.getElementById('status').textContent = 'Call ended. A summary will be sent to your email.';
+            document.getElementById('status').className = '';
+            document.getElementById('call-btn-end').style.display = 'none';
             document.querySelectorAll('audio').forEach(el => el.remove());
+        }
+
+        function updateTimer() {
+            if (!callStartTime) return;
+            const s = Math.floor((Date.now() - callStartTime) / 1000);
+            document.getElementById('timer').textContent =
+                `${String(Math.floor(s/60)).padStart(2,'0')}:${String(s%60).padStart(2,'0')}`;
         }
     </script>
 </body>

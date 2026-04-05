@@ -12,9 +12,12 @@ class Settings(BaseSettings):
     # Deepgram (STT + TTS)
     deepgram_api_key: str = ""
 
-    # Groq (LLM)
+    # Groq (LLM via OpenAI-compatible API)
     groq_api_key: str = ""
     groq_model: str = "llama-3.3-70b-versatile"
+
+    # Webhook (where to send triage reports)
+    webhook_url: str = ""
 
     # App
     app_host: str = "0.0.0.0"

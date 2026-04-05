@@ -1,182 +1,147 @@
-"""Voice triage agent using LiveKit Agents SDK.
+"""Voice triage agent using LiveKit + Groq LLM.
 
-LiveKit handles all the hard parts (WebRTC, audio, VAD, turn-taking).
-We just plug in Deepgram STT/TTS and our triage logic.
+The LLM drives the conversation like a real emergency dispatcher.
+No rigid state machine — the LLM asks smart, contextual questions.
+At the end, it calls a tool to send the triage report via webhook.
 """
 
 import json
 import logging
-import uuid
+from typing import Annotated
 
+import httpx
 from livekit.agents import (
     Agent,
     AgentSession,
-    ChatContext,
-    ChatMessage,
     JobContext,
-    StopResponse,
     WorkerOptions,
     cli,
+    function_tool,
 )
-from livekit.agents.stt import STT
-from livekit.agents.tts import TTS
-from livekit.plugins import deepgram, silero
+from livekit.agents.llm import ChatContext
+from livekit.plugins import deepgram, silero, openai
 
 from src.config import settings
-from src.nlu.extractor import extract_structured_data, classify_complaint
-from src.safety.guardrails import check_danger_keywords, sanitize_response, should_escalate
-from src.safety.disclaimers import ESCALATION_TEXT, CALL_END_TEXT, NO_CONSENT_TEXT
-from src.triage.state_machine import TriageSession, TriageStateMachine
-from src.triage.states import TriageState
-from src.triage.questions import get_current_question, is_protocol_complete, QUESTIONS
-from src.triage.pre_arrival import get_pre_arrival_instructions
 
 logger = logging.getLogger(__name__)
 
-PROTOCOL_STATES = (
-    TriageState.MALARIA_PROTOCOL,
-    TriageState.TRAUMA_PROTOCOL,
-    TriageState.MATERNAL_PROTOCOL,
-    TriageState.RESPIRATORY_PROTOCOL,
-    TriageState.SNAKEBITE_PROTOCOL,
-    TriageState.GENERAL_PROTOCOL,
-)
+SYSTEM_PROMPT = """You are an emergency medical triage dispatcher. You are the first point of contact when someone calls for medical help.
+
+CALLER INFO (collected before the call):
+- Name: {caller_name}
+- Phone: {caller_phone}
+- Email: {caller_email}
+
+YOUR BEHAVIOR:
+- You are calm, direct, and in control. Like a police dispatcher during a crisis.
+- You acknowledge what the caller says immediately. "Okay, I hear you."
+- You ask ONE question at a time. Short. Clear.
+- Your questions are LOGICAL based on what they tell you. If they say "my hand hurts", you ask "What happened to your hand?" then "Can you move your fingers?" — not "Can you swallow?"
+- You sound like a real human dispatcher, not a robot reading a script.
+- You are empathetic but efficient. No wasted words.
+
+CRITICAL RULES:
+1. NEVER tell the caller what condition they might have. No "this sounds like a fracture." Just ask questions.
+2. NEVER give medical advice or suggest medications.
+3. Ask 4-8 questions to understand the situation, then wrap up.
+4. If it sounds life-threatening (not breathing, heavy bleeding, unconscious, chest pain), tell them to call 999/112 IMMEDIATELY and give basic first-aid instructions (like "press on the wound with a cloth").
+5. After you have enough information, call the end_triage tool with your findings.
+6. Speak naturally. Use contractions. Be human.
+
+QUESTION FLOW (adapt based on what they say):
+1. "What's going on?" / Acknowledge what they said
+2. "How did this happen?" (if injury)
+3. Specific questions about their complaint (logical follow-ups)
+4. "How bad is the pain, 1 to 10?"
+5. "Is anything else going on that I should know about?"
+6. Wrap up: "Alright, I've got everything I need. We're sending this to the medical team right now."
+
+Then call end_triage with all the information."""
 
 
 class TriageAgent(Agent):
-    """LiveKit Agent that runs the medical triage conversation."""
-
-    def __init__(self):
+    def __init__(self, caller_name: str, caller_phone: str, caller_email: str):
+        prompt = SYSTEM_PROMPT.format(
+            caller_name=caller_name,
+            caller_phone=caller_phone,
+            caller_email=caller_email,
+        )
         super().__init__(
-            instructions=(
-                "You are a medical triage AI assistant. You ONLY ask questions to "
-                "understand the emergency. You NEVER reveal medical conditions or "
-                "diagnoses to the caller. You ask clear, simple questions and note "
-                "findings internally."
+            instructions=prompt,
+            llm=openai.LLM.with_groq(
+                model=settings.groq_model,
+                api_key=settings.groq_api_key,
             ),
         )
-        self.triage_session = TriageSession(session_id=str(uuid.uuid4()))
-        self.machine = TriageStateMachine(self.triage_session)
-        self.low_confidence_streak = 0
+        self.caller_name = caller_name
+        self.caller_phone = caller_phone
+        self.caller_email = caller_email
 
     async def on_enter(self):
-        """Called when the agent enters the session. Send greeting."""
-        greeting = get_current_question(TriageState.GREETING, 0, {"caller_name": ""})
-        if greeting:
-            self.session.say(greeting)
-
-    async def on_user_turn_completed(self, turn_ctx, new_message: ChatMessage):
-        """Called when the user finishes speaking. Process through triage."""
-        caller_text = (new_message.text_content or "").strip()
-        if not caller_text:
-            return
-
-        logger.info("Caller said: '%s' (state: %s)", caller_text, self.triage_session.state.value)
-
-        # Check danger keywords
-        danger_matches = check_danger_keywords(caller_text)
-        if danger_matches:
-            logger.warning("Danger keywords: %s", danger_matches)
-
-        # Check escalation
-        escalate, reason = should_escalate(
-            self.triage_session.turn_count,
-            self.low_confidence_streak,
-            caller_text,
-            self.triage_session.severity.value,
-        )
-        if escalate:
-            logger.warning("Escalating: %s", reason)
-            self.triage_session.internal_notes.append(f"Escalated: {reason}")
-            self.session.say(sanitize_response(ESCALATION_TEXT), add_to_chat_ctx=False)
-            self.triage_session.state = TriageState.CALL_END
-            self._log_report()
-            raise StopResponse()
-
-        # NLU extraction
-        question_context = self._get_current_question_text() or ""
-        expected_fields = self._get_expected_fields()
-
-        nlu_result = await extract_structured_data(
-            caller_text=caller_text,
-            state=self.triage_session.state,
-            question_asked=question_context,
-            expected_fields=expected_fields,
+        # Greet using the caller's name
+        self.session.generate_reply(
+            instructions=f"The caller's name is {self.caller_name}. Greet them by name briefly and ask what's going on. One sentence max."
         )
 
-        # Track confidence
-        confidence = nlu_result.get("confidence", 0.8)
-        if confidence < 0.6:
-            self.low_confidence_streak += 1
-        else:
-            self.low_confidence_streak = 0
+    @function_tool()
+    async def end_triage(
+        self,
+        severity: Annotated[str, "One of: critical, urgent, moderate, minor"],
+        chief_complaint: Annotated[str, "Brief description of the main complaint"],
+        findings: Annotated[str, "All medical findings from the conversation"],
+        suspected_conditions: Annotated[str, "What this could be (NEVER told to caller)"],
+        recommended_action: Annotated[str, "What medical team should do"],
+        first_aid_given: Annotated[str, "Any first-aid instructions given to caller"],
+    ):
+        """Call this when you have enough information to send the triage report. This ends the call."""
+        report = {
+            "caller": {
+                "name": self.caller_name,
+                "phone": self.caller_phone,
+                "email": self.caller_email,
+            },
+            "triage": {
+                "severity": severity,
+                "chief_complaint": chief_complaint,
+                "findings": findings,
+                "suspected_conditions": suspected_conditions,
+                "recommended_action": recommended_action,
+                "first_aid_given": first_aid_given,
+            },
+        }
 
-        # Chief complaint classification
-        if self.triage_session.state == TriageState.CHIEF_COMPLAINT:
-            if not nlu_result.get("category"):
-                category = await classify_complaint(caller_text)
-                nlu_result["category"] = category
-            nlu_result["complaint_text"] = caller_text
-
-        # Protocol completion
-        if self.triage_session.state in PROTOCOL_STATES:
-            if is_protocol_complete(self.triage_session.state, self.triage_session.current_protocol_step + 1):
-                nlu_result["protocol_complete"] = True
-
-        # State machine transition
-        new_state = self.machine.process_nlu_result(nlu_result)
-        logger.info("State -> %s (severity: %s)", new_state.value, self.triage_session.severity.value)
-
-        # Respond with our triage question (bypass LLM — we control the conversation)
-        response = self._get_response_for_state()
-        if response:
-            response = sanitize_response(response)
-            self.session.say(response, add_to_chat_ctx=False)
-
-        if self.triage_session.state == TriageState.CALL_END:
-            self._log_report()
-
-        # Stop the LLM from generating its own reply — we handle all responses
-        raise StopResponse()
-
-    def _get_current_question_text(self) -> str | None:
-        state = self.triage_session.state
-        step = self.triage_session.current_protocol_step if state in PROTOCOL_STATES else 0
-        return get_current_question(state, step, {"caller_name": self.triage_session.caller_name})
-
-    def _get_expected_fields(self) -> str:
-        state = self.triage_session.state
-        questions = QUESTIONS.get(state, [])
-        step = self.triage_session.current_protocol_step if state in PROTOCOL_STATES else 0
-        if step < len(questions):
-            return questions[step].get("expect", "")
-        return ""
-
-    def _get_response_for_state(self) -> str | None:
-        state = self.triage_session.state
-        if state == TriageState.CALL_END:
-            return CALL_END_TEXT
-        if state == TriageState.HUMAN_ESCALATION:
-            return ESCALATION_TEXT
-        if state == TriageState.PRE_ARRIVAL_INSTRUCTIONS:
-            all_findings = {**self.triage_session.danger_sign_findings, **self.triage_session.protocol_findings}
-            return get_pre_arrival_instructions(
-                self.triage_session.complaint_category, self.triage_session.severity, all_findings,
-            )
-        step = self.triage_session.current_protocol_step if state in PROTOCOL_STATES else 0
-        question = get_current_question(state, step, {"caller_name": self.triage_session.caller_name})
-        if question is None and state == TriageState.CONSENT:
-            return NO_CONSENT_TEXT
-        return question
-
-    def _log_report(self):
-        report = self.machine.get_triage_report()
         logger.info("TRIAGE REPORT: %s", json.dumps(report, indent=2))
+
+        # Send webhook
+        if settings.webhook_url:
+            try:
+                async with httpx.AsyncClient() as client:
+                    resp = await client.post(
+                        settings.webhook_url,
+                        json=report,
+                        timeout=10.0,
+                    )
+                    logger.info("Webhook sent: %s", resp.status_code)
+            except Exception as e:
+                logger.error("Webhook failed: %s", e)
+
+        return f"Report sent. Tell {self.caller_name} that you've sent everything to the medical team and they'll receive a summary at {self.caller_email}. Say goodbye."
 
 
 async def entrypoint(ctx: JobContext):
-    """LiveKit agent entrypoint — called when a user joins a room."""
+    """LiveKit agent entrypoint."""
     await ctx.connect()
+
+    # Get caller info from room metadata (set by the web UI)
+    metadata = ctx.room.metadata or "{}"
+    try:
+        caller_info = json.loads(metadata)
+    except json.JSONDecodeError:
+        caller_info = {}
+
+    caller_name = caller_info.get("name", "there")
+    caller_phone = caller_info.get("phone", "")
+    caller_email = caller_info.get("email", "")
 
     session = AgentSession(
         stt=deepgram.STT(api_key=settings.deepgram_api_key),
@@ -184,7 +149,10 @@ async def entrypoint(ctx: JobContext):
         vad=silero.VAD.load(),
     )
 
-    await session.start(agent=TriageAgent(), room=ctx.room)
+    await session.start(
+        agent=TriageAgent(caller_name, caller_phone, caller_email),
+        room=ctx.room,
+    )
 
 
 def run_agent():
