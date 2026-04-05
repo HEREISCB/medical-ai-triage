@@ -176,7 +176,7 @@ async def entrypoint(ctx: JobContext):
 
     session = AgentSession(
         stt=deepgram.STT(api_key=settings.deepgram_api_key),
-        tts=deepgram.TTS(api_key=settings.deepgram_api_key, voice="aura-asteria-en"),
+        tts=deepgram.TTS(api_key=settings.deepgram_api_key, model="aura-asteria-en"),
         vad=silero.VAD.load(),
     )
 
