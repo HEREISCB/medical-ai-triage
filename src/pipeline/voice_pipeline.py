@@ -1,7 +1,7 @@
-"""Voice triage pipeline using FastAPI WebSocket + Deepgram + Groq.
+"""Voice triage pipeline using FastAPI WebSocket + Deepgram APIs directly.
 
-Single-port architecture: FastAPI handles both HTTP and WebSocket on port 8000.
-No Pipecat transport needed — we manage the audio stream directly.
+Single-port: FastAPI handles both HTTP and WebSocket on port 8000.
+Uses Deepgram APIs directly (no SDK version issues).
 
 Flow:
   Client mic -> WebSocket -> Deepgram STT -> Triage Logic -> Deepgram TTS -> WebSocket -> Client speaker
@@ -12,11 +12,9 @@ import json
 import logging
 import uuid
 
-from deepgram import (
-    DeepgramClient,
-    LiveTranscriptionEvents,
-    LiveOptions,
-)
+import httpx
+import websockets
+
 from fastapi import WebSocket
 
 from src.config import settings
@@ -39,6 +37,14 @@ PROTOCOL_STATES = (
     TriageState.GENERAL_PROTOCOL,
 )
 
+DEEPGRAM_STT_URL = (
+    "wss://api.deepgram.com/v1/listen"
+    "?model=nova-2&language=en&encoding=linear16&sample_rate=16000"
+    "&channels=1&interim_results=false&utterance_end_ms=1500&vad_events=true&endpointing=300"
+)
+
+DEEPGRAM_TTS_URL = "https://api.deepgram.com/v1/speak?model=aura-asteria-en&encoding=linear16&sample_rate=16000"
+
 
 class TriageCall:
     """Manages a single triage call session."""
@@ -48,8 +54,7 @@ class TriageCall:
         self.session = TriageSession(session_id=str(uuid.uuid4()))
         self.machine = TriageStateMachine(self.session)
         self.low_confidence_streak = 0
-        self._dg_client = None
-        self._dg_connection = None
+        self._dg_ws = None
         self._processing = False
 
     async def run(self):
@@ -61,69 +66,67 @@ class TriageCall:
         if greeting:
             await self._speak(greeting)
 
-        # Set up Deepgram for live STT
-        self._dg_client = DeepgramClient(settings.deepgram_api_key)
-        self._dg_connection = self._dg_client.listen.asyncwebsocket.v("1")
+        # Connect to Deepgram STT WebSocket
+        headers = {"Authorization": f"Token {settings.deepgram_api_key}"}
 
-        # Handle transcription results
-        self._dg_connection.on(LiveTranscriptionEvents.Transcript, self._on_transcript)
-        self._dg_connection.on(LiveTranscriptionEvents.Error, self._on_dg_error)
-
-        options = LiveOptions(
-            model="nova-2",
-            language="en",
-            encoding="linear16",
-            sample_rate=16000,
-            channels=1,
-            interim_results=False,
-            utterance_end_ms="1500",
-            vad_events=True,
-            endpointing=300,
-        )
-
-        if not await self._dg_connection.start(options):
-            logger.error("Failed to connect to Deepgram STT")
-            await self.ws.send_json({"type": "error", "message": "Failed to connect to speech service"})
-            return
-
-        logger.info("Deepgram STT connected")
-
-        # Stream audio from client to Deepgram
         try:
-            while True:
-                data = await self.ws.receive_bytes()
-                await self._dg_connection.send(data)
+            async with websockets.connect(DEEPGRAM_STT_URL, extra_headers=headers) as dg_ws:
+                self._dg_ws = dg_ws
+                logger.info("Deepgram STT connected")
+
+                # Run two tasks: forward audio to Deepgram, and listen for transcripts
+                await asyncio.gather(
+                    self._forward_audio_to_deepgram(dg_ws),
+                    self._listen_for_transcripts(dg_ws),
+                )
+
         except Exception as e:
-            logger.info("Client disconnected: %s", e)
+            logger.error("Deepgram connection error: %s", e)
         finally:
-            await self._dg_connection.finish()
             report = self.machine.get_triage_report()
             logger.info("CALL ENDED. Triage report: %s", json.dumps(report, indent=2))
 
-    async def _on_transcript(self, connection, result, **kwargs):
-        """Handle a transcription result from Deepgram."""
+    async def _forward_audio_to_deepgram(self, dg_ws):
+        """Forward audio from the client WebSocket to Deepgram STT."""
         try:
-            transcript = result.channel.alternatives[0].transcript.strip()
-            if not transcript or result.is_final is False:
-                return
-
-            logger.info("Caller said: '%s' (state: %s)", transcript, self.session.state.value)
-
-            # Prevent re-entrant processing
-            if self._processing:
-                return
-            self._processing = True
-
-            try:
-                await self._process_caller_input(transcript)
-            finally:
-                self._processing = False
-
+            while True:
+                data = await self.ws.receive_bytes()
+                await dg_ws.send(data)
         except Exception as e:
-            logger.error("Error processing transcript: %s", e)
+            logger.info("Client audio stream ended: %s", type(e).__name__)
+            # Send close signal to Deepgram
+            try:
+                await dg_ws.send(json.dumps({"type": "CloseStream"}))
+            except Exception:
+                pass
 
-    async def _on_dg_error(self, connection, error, **kwargs):
-        logger.error("Deepgram STT error: %s", error)
+    async def _listen_for_transcripts(self, dg_ws):
+        """Listen for transcription results from Deepgram."""
+        try:
+            async for message in dg_ws:
+                data = json.loads(message)
+
+                # Only process final transcripts
+                if data.get("type") == "Results" and data.get("is_final"):
+                    transcript = (
+                        data.get("channel", {})
+                        .get("alternatives", [{}])[0]
+                        .get("transcript", "")
+                        .strip()
+                    )
+                    if transcript:
+                        logger.info("Caller said: '%s' (state: %s)", transcript, self.session.state.value)
+                        if not self._processing:
+                            self._processing = True
+                            try:
+                                await self._process_caller_input(transcript)
+                            finally:
+                                self._processing = False
+
+        except websockets.exceptions.ConnectionClosed:
+            logger.info("Deepgram STT connection closed")
+        except Exception as e:
+            logger.error("Transcript listener error: %s", e)
 
     async def _process_caller_input(self, caller_text: str):
         """Process what the caller said through the triage pipeline."""
@@ -195,23 +198,28 @@ class TriageCall:
             logger.info("TRIAGE COMPLETE: %s", json.dumps(report, indent=2))
 
     async def _speak(self, text: str):
-        """Convert text to speech via Deepgram TTS and send audio to client."""
+        """Convert text to speech via Deepgram TTS REST API and send audio to client."""
         try:
-            dg = DeepgramClient(settings.deepgram_api_key)
-            options = {"model": "aura-asteria-en", "encoding": "linear16", "sample_rate": 16000}
+            async with httpx.AsyncClient() as client:
+                response = await client.post(
+                    DEEPGRAM_TTS_URL,
+                    headers={
+                        "Authorization": f"Token {settings.deepgram_api_key}",
+                        "Content-Type": "application/json",
+                    },
+                    json={"text": text},
+                    timeout=15.0,
+                )
 
-            response = await dg.speak.asyncrest.v("1").stream_raw({"text": text}, options)
+                if response.status_code == 200:
+                    await self.ws.send_bytes(response.content)
+                    logger.info("Spoke: %s", text[:80])
+                else:
+                    logger.error("TTS error: %s %s", response.status_code, response.text)
 
-            # Send audio chunks to client
-            audio_data = response.stream.read()
-            if audio_data:
-                # Send as binary WebSocket message
-                await self.ws.send_bytes(audio_data)
-
-            logger.info("Spoke: %s", text[:80])
         except Exception as e:
             logger.error("TTS error: %s", e)
-            # Fallback: send text
+            # Fallback: send as text
             try:
                 await self.ws.send_json({"type": "text", "message": text})
             except Exception:
