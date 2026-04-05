@@ -40,10 +40,10 @@ PROTOCOL_STATES = (
 DEEPGRAM_STT_URL = (
     "wss://api.deepgram.com/v1/listen"
     "?model=nova-2&language=en&encoding=linear16&sample_rate=16000"
-    "&channels=1&interim_results=false&utterance_end_ms=1500&vad_events=true&endpointing=300"
+    "&channels=1&interim_results=false&utterance_end_ms=1500&endpointing=300"
 )
 
-DEEPGRAM_TTS_URL = "https://api.deepgram.com/v1/speak?model=aura-asteria-en&container=wav"
+DEEPGRAM_TTS_URL = "https://api.deepgram.com/v1/speak?model=aura-asteria-en&encoding=linear16&container=wav&sample_rate=24000"
 
 
 class TriageCall:
