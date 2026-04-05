@@ -43,7 +43,7 @@ DEEPGRAM_STT_URL = (
     "&channels=1&interim_results=false&utterance_end_ms=1500&vad_events=true&endpointing=300"
 )
 
-DEEPGRAM_TTS_URL = "https://api.deepgram.com/v1/speak?model=aura-asteria-en&encoding=linear16&sample_rate=16000"
+DEEPGRAM_TTS_URL = "https://api.deepgram.com/v1/speak?model=aura-asteria-en&container=wav"
 
 
 class TriageCall:

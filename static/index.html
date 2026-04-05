@@ -326,29 +326,27 @@
             scriptProcessor.connect(audioContext.destination);
         }
 
+        // Queue audio chunks and play them in order
         async function playAudio(audioData) {
             if (!audioContext) return;
+            playbackQueue.push(audioData);
+            if (!isPlaying) playNext();
+        }
 
+        async function playNext() {
+            if (playbackQueue.length === 0) { isPlaying = false; return; }
+            isPlaying = true;
+            const data = playbackQueue.shift();
             try {
-                // Try decoding as WAV/audio
-                const audioBuffer = await audioContext.decodeAudioData(audioData.slice(0));
+                const audioBuffer = await audioContext.decodeAudioData(data.slice(0));
                 const source = audioContext.createBufferSource();
                 source.buffer = audioBuffer;
                 source.connect(audioContext.destination);
+                source.onended = () => playNext();
                 source.start(0);
             } catch (e) {
-                // If decoding fails, try playing as raw PCM
-                const int16 = new Int16Array(audioData);
-                const float32 = new Float32Array(int16.length);
-                for (let i = 0; i < int16.length; i++) {
-                    float32[i] = int16[i] / 0x7FFF;
-                }
-                const buffer = audioContext.createBuffer(1, float32.length, SAMPLE_RATE);
-                buffer.getChannelData(0).set(float32);
-                const source = audioContext.createBufferSource();
-                source.buffer = buffer;
-                source.connect(audioContext.destination);
-                source.start(0);
+                console.error('Audio decode error:', e);
+                playNext();
             }
         }
 
