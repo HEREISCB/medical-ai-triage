@@ -68,9 +68,10 @@ class TriageAgent(Agent):
         )
         super().__init__(
             instructions=prompt,
-            llm=openai.LLM.with_groq(
+            llm=openai.LLM(
                 model=settings.groq_model,
                 api_key=settings.groq_api_key,
+                base_url="https://api.groq.com/openai/v1",
             ),
         )
         self.caller_name = caller_name
