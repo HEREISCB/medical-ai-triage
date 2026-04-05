@@ -14,6 +14,7 @@ from livekit.agents import (
     ChatContext,
     ChatMessage,
     JobContext,
+    StopResponse,
     WorkerOptions,
     cli,
 )
@@ -66,7 +67,7 @@ class TriageAgent(Agent):
 
     async def on_user_turn_completed(self, turn_ctx, new_message: ChatMessage):
         """Called when the user finishes speaking. Process through triage."""
-        caller_text = new_message.text_content.strip()
+        caller_text = (new_message.text_content or "").strip()
         if not caller_text:
             return
 
@@ -87,10 +88,10 @@ class TriageAgent(Agent):
         if escalate:
             logger.warning("Escalating: %s", reason)
             self.triage_session.internal_notes.append(f"Escalated: {reason}")
-            turn_ctx.say(sanitize_response(ESCALATION_TEXT))
+            self.session.say(sanitize_response(ESCALATION_TEXT), add_to_chat_ctx=False)
             self.triage_session.state = TriageState.CALL_END
             self._log_report()
-            return
+            raise StopResponse()
 
         # NLU extraction
         question_context = self._get_current_question_text() or ""
@@ -126,14 +127,17 @@ class TriageAgent(Agent):
         new_state = self.machine.process_nlu_result(nlu_result)
         logger.info("State -> %s (severity: %s)", new_state.value, self.triage_session.severity.value)
 
-        # Respond
+        # Respond with our triage question (bypass LLM — we control the conversation)
         response = self._get_response_for_state()
         if response:
             response = sanitize_response(response)
-            turn_ctx.say(response)
+            self.session.say(response, add_to_chat_ctx=False)
 
         if self.triage_session.state == TriageState.CALL_END:
             self._log_report()
+
+        # Stop the LLM from generating its own reply — we handle all responses
+        raise StopResponse()
 
     def _get_current_question_text(self) -> str | None:
         state = self.triage_session.state
