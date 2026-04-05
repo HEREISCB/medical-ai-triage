@@ -1,21 +1,18 @@
 """FastAPI application for the medical triage system.
 
-Provides:
-- GET  /            -> Serves the web call UI
-- WS   /ws          -> WebSocket endpoint for voice pipeline
-- GET  /api/health  -> Health check
+Architecture:
+- FastAPI serves the web UI on port 8000
+- Pipecat runs its own WebSocket server on port 8765 for audio
+- Client connects to both: HTTP for the page, WS for audio
 """
 
 import asyncio
 import logging
 
-from fastapi import FastAPI, WebSocket
+from fastapi import FastAPI
 from fastapi.responses import HTMLResponse
 
 from src.config import settings
-from src.pipeline.voice_pipeline import create_pipeline_components
-
-from pipecat.pipeline.runner import PipelineRunner
 
 logging.basicConfig(
     level=logging.INFO,
@@ -29,34 +26,36 @@ app = FastAPI(
     version="0.1.0",
 )
 
-_active_sessions: dict[str, asyncio.Task] = {}
+_pipeline_task = None
 
 
-@app.websocket("/ws")
-async def websocket_endpoint(websocket: WebSocket):
-    """WebSocket endpoint for the voice triage pipeline.
+async def start_pipeline():
+    """Start the Pipecat voice pipeline on app startup."""
+    global _pipeline_task
+    from src.pipeline.voice_pipeline import run_pipeline
+    _pipeline_task = asyncio.create_task(run_pipeline())
+    logger.info("Pipecat pipeline started on ws://0.0.0.0:8765")
 
-    The client connects here, sends audio frames, and receives audio back.
-    """
-    await websocket.accept()
-    session_id = str(id(websocket))
-    logger.info("New WebSocket connection: %s", session_id)
 
-    transport, task = create_pipeline_components()
+@app.on_event("startup")
+async def on_startup():
+    await start_pipeline()
 
-    runner = PipelineRunner(handle_sigint=False)
 
-    try:
-        await runner.run(task)
-    except Exception as e:
-        logger.error("Pipeline error for session %s: %s", session_id, e)
-    finally:
-        logger.info("Session %s ended", session_id)
+@app.on_event("shutdown")
+async def on_shutdown():
+    global _pipeline_task
+    if _pipeline_task:
+        _pipeline_task.cancel()
+        try:
+            await _pipeline_task
+        except asyncio.CancelledError:
+            pass
 
 
 @app.get("/api/health")
 async def health():
-    return {"status": "ok"}
+    return {"status": "ok", "pipeline_running": _pipeline_task is not None and not _pipeline_task.done()}
 
 
 @app.get("/", response_class=HTMLResponse)

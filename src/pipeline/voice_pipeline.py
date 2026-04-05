@@ -237,19 +237,15 @@ class TriageProcessor(FrameProcessor):
         return question
 
 
-def create_pipeline_components():
-    """Create the pipeline components for WebSocket transport.
-
-    Returns the transport, triage processor, and assembled pipeline task.
-    """
+async def run_pipeline():
+    """Start the Pipecat voice pipeline with its own WebSocket server on port 8765."""
     transport = WebsocketServerTransport(
         params=WebsocketServerParams(
             audio_in_enabled=True,
             audio_out_enabled=True,
             add_wav_header=True,
-            vad_enabled=True,
-            vad_audio_passthrough=True,
-            serializer=None,  # Use default ProtobufFrameSerializer
+            host="0.0.0.0",
+            port=8765,
         )
     )
 
@@ -291,11 +287,5 @@ def create_pipeline_components():
         logger.info("Final triage report: %s", report)
         await task.queue_frame(EndFrame())
 
-    return transport, task
-
-
-async def run_pipeline_ws(websocket):
-    """Run the voice triage pipeline with a WebSocket connection."""
-    transport, task = create_pipeline_components()
-    runner = PipelineRunner()
+    runner = PipelineRunner(handle_sigint=False)
     await runner.run(task)
