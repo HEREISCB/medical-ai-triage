@@ -22,6 +22,7 @@ from livekit.agents.llm import ChatContext
 from livekit.plugins import deepgram, silero, openai
 
 from src.config import settings
+from src.caller_store import get_caller
 
 logger = logging.getLogger(__name__)
 
@@ -134,60 +135,14 @@ async def entrypoint(ctx: JobContext):
     """LiveKit agent entrypoint."""
     await ctx.connect()
 
-    # Wait for the caller to join so we can read their metadata
-    caller_info = {}
+    # Read caller info from file store (written by the web UI)
+    room_name = ctx.room.name
+    caller_info = get_caller(room_name)
+    caller_name = caller_info["name"]
+    caller_phone = caller_info["phone"]
+    caller_email = caller_info["email"]
 
-    # Check existing participants first
-    for participant in ctx.room.remote_participants.values():
-        if participant.metadata:
-            try:
-                caller_info = json.loads(participant.metadata)
-                break
-            except json.JSONDecodeError:
-                pass
-
-    # If no metadata yet, wait for a participant to join
-    if not caller_info:
-        import asyncio
-        from livekit import rtc
-
-        future = asyncio.get_event_loop().create_future()
-
-        def on_participant_connected(participant: rtc.RemoteParticipant):
-            if participant.metadata and not future.done():
-                try:
-                    future.set_result(json.loads(participant.metadata))
-                except json.JSONDecodeError:
-                    pass
-
-        def on_metadata_changed(participant: rtc.Participant, old_metadata: str, new_metadata: str):
-            if new_metadata and not future.done():
-                try:
-                    future.set_result(json.loads(new_metadata))
-                except json.JSONDecodeError:
-                    pass
-
-        ctx.room.on("participant_connected", on_participant_connected)
-        ctx.room.on("participant_metadata_changed", on_metadata_changed)
-
-        # Also re-check current participants (might have joined during setup)
-        for participant in ctx.room.remote_participants.values():
-            if participant.metadata:
-                try:
-                    caller_info = json.loads(participant.metadata)
-                    break
-                except json.JSONDecodeError:
-                    pass
-
-        if not caller_info:
-            try:
-                caller_info = await asyncio.wait_for(future, timeout=10.0)
-            except asyncio.TimeoutError:
-                logger.warning("Timed out waiting for caller metadata")
-
-    caller_name = caller_info.get("name", "there")
-    caller_phone = caller_info.get("phone", "")
-    caller_email = caller_info.get("email", "")
+    logger.info("Caller: %s (%s, %s) in room %s", caller_name, caller_phone, caller_email, room_name)
 
     session = AgentSession(
         stt=deepgram.STT(api_key=settings.deepgram_api_key),

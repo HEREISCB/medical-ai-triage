@@ -7,6 +7,7 @@ import secrets
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse
 from livekit.api import AccessToken, VideoGrants
+from src.caller_store import set_caller
 from pydantic import BaseModel
 
 from src.config import settings
@@ -44,11 +45,13 @@ async def start_call(req: StartCallRequest):
         "email": req.email,
     })
 
-    # Generate caller token with metadata embedded
+    # Save caller info to file so the agent process can read it
+    set_caller(room_name, req.name, req.phone, req.email)
+
+    # Generate caller token
     token = (
         AccessToken(settings.livekit_api_key, settings.livekit_api_secret)
         .with_identity(f"caller-{secrets.token_hex(4)}")
-        .with_metadata(metadata)
         .with_grants(VideoGrants(room_join=True, room=room_name, room_create=True))
     )
 
