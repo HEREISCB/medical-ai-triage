@@ -1,39 +1,32 @@
 """Question bank for triage states.
 
-CRITICAL RULE: Questions NEVER hint at or reveal medical conditions.
-They are purely observational — asking the caller to describe what they SEE.
-The AI is an interrogator, not an explainer.
-
-Bad: "This sounds like it could be a stroke. Is the left side of their face drooping?"
-Good: "Can you look at their face? Does one side look different from the other?"
+CRITICAL RULES:
+1. Questions NEVER hint at or reveal medical conditions.
+2. No legal disclaimers, no "I am an AI" nonsense.
+3. The AI behaves like an emergency dispatcher — calm, direct, helpful.
+4. First response to ANY caller: acknowledge their problem, then ask questions.
 """
 
 from src.triage.states import TriageState
 
 
-# Each state maps to a list of questions asked in sequence.
-# The NLU module picks the appropriate question based on current_protocol_step.
-
 QUESTIONS: dict[str, list[dict]] = {
-    # === ENTRY STATES ===
+    # === GREETING — just acknowledge and start helping ===
     TriageState.GREETING: [
         {
             "text": (
-                "I'm here to help you. Take a deep breath. You're doing the right thing "
-                "by reaching out. I'm going to ask you a few quick questions so we can "
-                "get help to you as fast as possible. Can you tell me your name?"
+                "Okay, I hear you. I'm going to help you right now. "
+                "Can you tell me your name?"
             ),
             "expect": "caller_name",
         }
     ],
+    # === CONSENT — skip the legal crap, just confirm they want help ===
     TriageState.CONSENT: [
         {
             "text": (
-                "Thank you, {caller_name}. Before we continue, I need you to know "
-                "that I am an AI assistant. I will ask you questions to help get the "
-                "right help to you quickly. This conversation may be recorded. "
-                "If someone is in immediate danger right now, please call 999 or 112. "
-                "Can we continue?"
+                "Alright {caller_name}, I need to ask you a few quick questions "
+                "so we can get you the right help. Is that okay?"
             ),
             "expect": "consent",
         }
@@ -41,10 +34,7 @@ QUESTIONS: dict[str, list[dict]] = {
     # === CHIEF COMPLAINT ===
     TriageState.CHIEF_COMPLAINT: [
         {
-            "text": (
-                "Tell me what's happening right now. What do you see? "
-                "Take your time — just describe what's going on."
-            ),
+            "text": "Tell me exactly what's happening right now. What do you see?",
             "expect": "complaint_text",
         },
         {
@@ -58,17 +48,14 @@ QUESTIONS: dict[str, list[dict]] = {
     # === DANGER SIGNS (ABCDE) ===
     TriageState.AIRWAY: [
         {
-            "text": (
-                "Can the person talk or make sounds right now? "
-                "Are they able to swallow?"
-            ),
+            "text": "Can the person talk or make sounds right now? Can they swallow?",
             "expect": "airway_compromised",
         }
     ],
     TriageState.BREATHING: [
         {
             "text": (
-                "Is the person breathing? Can you watch their chest — "
+                "Is the person breathing? Look at their chest — "
                 "is it moving up and down?"
             ),
             "expect": "not_breathing,breathing_difficulty",
@@ -78,7 +65,7 @@ QUESTIONS: dict[str, list[dict]] = {
         {
             "text": (
                 "Is there any bleeding? If yes, how much — "
-                "is it a small amount, or is it flowing or soaking through cloth?"
+                "a small amount, or is it flowing or soaking through cloth?"
             ),
             "expect": "severe_bleeding,moderate_bleeding",
         }
@@ -86,7 +73,7 @@ QUESTIONS: dict[str, list[dict]] = {
     TriageState.DISABILITY: [
         {
             "text": (
-                "Is the person awake and aware of what's going on? "
+                "Is the person awake and aware? "
                 "Can they respond when you speak to them? "
                 "Are they shaking or jerking?"
             ),
@@ -96,24 +83,23 @@ QUESTIONS: dict[str, list[dict]] = {
     # === MALARIA/FEVER PROTOCOL ===
     TriageState.MALARIA_PROTOCOL: [
         {
-            "text": "Does the person feel hot to the touch? For how long have they been feeling this way?",
+            "text": "Does the person feel hot to the touch? How long have they been feeling this way?",
             "expect": "high_fever,fever_over_3_days",
-            "findings_key": "fever_duration",
         },
         {
             "text": "Have they been shaking or jerking at any point?",
             "expect": "convulsions",
         },
         {
-            "text": "Can they drink water or other fluids? Are they keeping it down, or throwing up?",
+            "text": "Can they drink water? Are they keeping it down or throwing up?",
             "expect": "unable_to_drink,vomiting_everything",
         },
         {
-            "text": "How is their energy? Can they sit up or walk, or are they too weak to move?",
+            "text": "How is their energy? Can they sit up, or are they too weak to move?",
             "expect": "very_weak",
         },
         {
-            "text": None,  # Sentinel: protocol complete
+            "text": None,
             "expect": "protocol_complete",
         },
     ],
@@ -128,11 +114,11 @@ QUESTIONS: dict[str, list[dict]] = {
             "expect": "head_injury_with_confusion",
         },
         {
-            "text": "Can they move their arms and legs? Is there anything that looks bent or out of place?",
+            "text": "Can they move their arms and legs? Is anything bent or out of place?",
             "expect": "fracture_suspected,suspected_spinal",
         },
         {
-            "text": "Is there any wound on the chest or belly? Can you see anything coming out?",
+            "text": "Is there any wound on the chest or belly?",
             "expect": "chest_wound,abdominal_pain",
         },
         {
@@ -155,15 +141,15 @@ QUESTIONS: dict[str, list[dict]] = {
             "expect": "heavy_bleeding,moderate_bleeding",
         },
         {
-            "text": "Is she having contractions or strong belly pains? How often are they coming?",
+            "text": "Is she having contractions or strong belly pains? How often?",
             "expect": "regular_contractions,severe_abdominal_pain",
         },
         {
-            "text": "Has her water broken? Is there any fluid leaking?",
+            "text": "Has her water broken? Is there fluid leaking?",
             "expect": "water_broken",
         },
         {
-            "text": "Does she have a bad headache, or is her vision blurry? Has she been shaking?",
+            "text": "Does she have a bad headache, blurry vision, or has she been shaking?",
             "expect": "severe_headache_with_blurred_vision,seizures",
         },
         {
@@ -174,7 +160,7 @@ QUESTIONS: dict[str, list[dict]] = {
     # === RESPIRATORY PROTOCOL ===
     TriageState.RESPIRATORY_PROTOCOL: [
         {
-            "text": "Can the person speak full sentences, or do they have to stop to catch their breath?",
+            "text": "Can the person speak full sentences, or do they stop to catch their breath?",
             "expect": "unable_to_speak",
         },
         {
@@ -182,15 +168,15 @@ QUESTIONS: dict[str, list[dict]] = {
             "expect": "blue_lips",
         },
         {
-            "text": "Can you see the skin pulling in between the ribs or under the neck when they breathe?",
+            "text": "Can you see the skin pulling in between the ribs when they breathe?",
             "expect": "severe_chest_indrawing",
         },
         {
-            "text": "Are they breathing fast? Do they have a whistling sound when they breathe?",
+            "text": "Are they breathing fast? Is there a whistling sound?",
             "expect": "fast_breathing,wheezing",
         },
         {
-            "text": "Is there any pain in the chest? Are they coughing up any blood?",
+            "text": "Any pain in the chest? Are they coughing up blood?",
             "expect": "chest_pain,coughing_blood",
         },
         {
@@ -205,11 +191,11 @@ QUESTIONS: dict[str, list[dict]] = {
             "expect": "time_since_bite",
         },
         {
-            "text": "Where on the body is the bite? Is it on the arm, leg, or somewhere else?",
+            "text": "Where on the body is the bite?",
             "expect": "bite_on_trunk_or_face",
         },
         {
-            "text": "Is the area around the bite swollen? Is the swelling spreading or staying the same?",
+            "text": "Is the area around the bite swollen? Is the swelling spreading?",
             "expect": "significant_swelling,swelling_spreading_fast",
         },
         {
@@ -217,11 +203,11 @@ QUESTIONS: dict[str, list[dict]] = {
             "expect": "blurred_vision,unable_to_swallow",
         },
         {
-            "text": "Are their gums bleeding, or is there bleeding from anywhere unusual?",
+            "text": "Are their gums bleeding, or any bleeding from unusual places?",
             "expect": "bleeding_from_gums",
         },
         {
-            "text": "Are they feeling sick to their stomach? Is the pain very bad?",
+            "text": "Are they feeling sick? Is the pain very bad?",
             "expect": "nausea_vomiting,severe_pain",
         },
         {
@@ -232,15 +218,15 @@ QUESTIONS: dict[str, list[dict]] = {
     # === GENERAL PROTOCOL ===
     TriageState.GENERAL_PROTOCOL: [
         {
-            "text": "On a scale of 1 to 10, how bad is the pain or discomfort?",
+            "text": "On a scale of 1 to 10, how bad is the pain?",
             "expect": "severe_pain,moderate_pain",
         },
         {
-            "text": "How long has this been going on? Is it getting worse, staying the same, or getting better?",
+            "text": "How long has this been going on? Is it getting worse or staying the same?",
             "expect": "worsening_symptoms",
         },
         {
-            "text": "Can the person move around normally, or are they stuck in one position?",
+            "text": "Can the person move around normally?",
             "expect": "unable_to_move",
         },
         {
@@ -252,10 +238,7 @@ QUESTIONS: dict[str, list[dict]] = {
 
 
 def get_current_question(state: TriageState, step: int, session_data: dict = None) -> str | None:
-    """Get the current question for the given state and step.
-
-    Returns None if no more questions (protocol complete).
-    """
+    """Get the current question for the given state and step."""
     questions = QUESTIONS.get(state, [])
     if step >= len(questions):
         return None
@@ -264,9 +247,8 @@ def get_current_question(state: TriageState, step: int, session_data: dict = Non
     text = question["text"]
 
     if text is None:
-        return None  # Protocol complete sentinel
+        return None
 
-    # Template substitution for caller name etc.
     if session_data:
         try:
             text = text.format(**session_data)
